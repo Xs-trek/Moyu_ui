@@ -1,0 +1,76 @@
+plugins {
+    id 'com.android.application'
+}
+
+def moyuLocalTest = (project.findProperty('moyuLocalTest') ?: 'false').toString().toBoolean()
+if (moyuLocalTest && gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }) {
+    throw new GradleException('moyuLocalTest is debug-only and cannot be combined with a release task')
+}
+
+android {
+    compileSdkVersion 34
+
+    defaultConfig {
+        applicationId moyuLocalTest ? "com.moyu.remote.localtest" : "com.moyu.remote"
+        minSdkVersion 26
+        targetSdkVersion 34
+        versionCode 2
+        versionName "0.0.2"
+
+        // The local-test APK runs on the installed x86 emulator and never loads EasyTier JNI.
+        // Normal debug/release APKs remain arm64 and keep the production overlay path.
+        ndk { abiFilters(moyuLocalTest ? 'x86' : 'arm64-v8a') }
+        buildConfigField "boolean", "MOYU_LOCAL_TEST", moyuLocalTest ? "true" : "false"
+        if (moyuLocalTest) versionNameSuffix "-localtest"
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+            minifyEnabled false
+        }
+        release {
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    packagingOptions {
+        doNotStrip '*/arm64-v8a/libeasytier_android_jni.so'
+        doNotStrip '*/arm64-v8a/libeasytier_ffi.so'
+    }
+}
+
+def uiDist = file('../../dist')
+def uiAssets = file('src/main/assets/ui')
+
+tasks.register('syncMoyuUi', Sync) {
+    dependsOn ':app:verifyMoyuUi'
+    from(uiDist) {
+        exclude 'preview.html'
+        exclude 'assets/preview-*'
+    }
+    into uiAssets
+}
+
+tasks.register('verifyMoyuUi') {
+    doLast {
+        if (!new File(uiDist, 'index.html').isFile()) {
+            throw new GradleException('Missing ../../dist/index.html; run npm run build first')
+        }
+    }
+}
+
+preBuild.dependsOn syncMoyuUi
+
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:3.14.9'
+    testImplementation 'junit:junit:4.13.2'
+}

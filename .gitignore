@@ -1,0 +1,33 @@
+node_modules/
+dist/
+*.log
+.preview.log
+test-artifacts/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/src/main/assets/ui/
+android/app/src/main/jniLibs/
+artifacts/
+.inspection/
+app-arm64-release.apk
+*.tsbuildinfo
+
+# 本机联调专属文件（不进库，保留在本地磁盘）
+LOCAL_INTEGRATION.md
+scripts/run-local-integration.ps1
+scripts/capture-local-integration.ps1
+
+# Android 上忽略规范（对齐 github/gitignore Android.gitignore）
+android/.externalNativeBuild/
+android/.cxx/
+captures/
+.idea/
+*.iml
+*.jks
+*.keystore
+google-services.json
+*.aab
+*.hprof
+.DS_Store
+

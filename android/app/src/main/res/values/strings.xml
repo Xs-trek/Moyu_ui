@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Moyu</string>
+    <string name="overlay_channel">Moyu 节点连接</string>
+</resources>
