@@ -1,0 +1,16 @@
+{
+  "name": "moyu-ui",
+  "version": "0.0.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "check": "node scripts/check-ui.mjs",
+    "android:build": "npm run build && cd android && gradlew.bat assembleDebug"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

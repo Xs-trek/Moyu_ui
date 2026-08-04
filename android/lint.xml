@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- AGP 7 still requires an unqualified fallback while API 26+ uses this adaptive icon. -->
+    <issue id="ObsoleteSdkInt">
+        <ignore path="app/src/main/res/mipmap-anydpi-v26" />
+    </issue>
+</lint>

@@ -1,0 +1,48 @@
+.app-shell { min-height: 100vh; min-height: 100dvh; padding-bottom: calc(78px + var(--safe-bottom)); }
+.app-shell.conversation-active { padding-bottom: 0; }
+.app-header { position: sticky; z-index: var(--z-nav); top: 0; display: flex; align-items: center; gap: var(--space-3); min-height: calc(64px + var(--safe-top)); padding: calc(var(--space-3) + var(--safe-top)) calc(var(--space-4) + var(--safe-right)) var(--space-3) calc(var(--space-4) + var(--safe-left)); background: var(--yellow); border-bottom: var(--border); }
+.brand { display: flex; align-items: center; gap: 10px; font-size: var(--text-xl); font-weight: var(--weight-black); letter-spacing: -.05em; }
+.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border: var(--border); background: var(--pink); box-shadow: 3px 3px 0 var(--ink); transform: rotate(-3deg); }
+.header-route-title { flex: 1; min-width: 0; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.header-status { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.header-theme { background: var(--surface); font-size: 1.15rem; }
+.main-layout { width: min(100%, 1160px); margin: 0 auto; }
+.page { padding: var(--space-4) calc(var(--space-4) + var(--safe-right)) var(--space-4) calc(var(--space-4) + var(--safe-left)); }
+.page-enter { animation: page-in var(--motion) ease-out; }
+.page-heading { display: flex; align-items: end; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-5); }
+.page-heading h1 { margin: 0; font-size: clamp(1.65rem, 7vw, 2.2rem); letter-spacing: -.05em; }
+.bottom-nav { position: fixed; z-index: var(--z-nav); top: auto; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(6, 1fr); padding: var(--space-2) calc(var(--space-1) + var(--safe-right)) calc(var(--space-2) + var(--safe-bottom)) calc(var(--space-1) + var(--safe-left)); background: var(--surface); border-top: var(--border); }
+.nav-item { display: grid; place-items: center; gap: 2px; min-width: 0; min-height: 54px; padding: 4px 2px; border: 0; background: transparent; font-size: .64rem; font-weight: var(--weight-bold); }
+.nav-item .nav-icon { font-size: 1.2rem; line-height: 1; }
+.nav-item[aria-current="page"] { background: var(--cyan); border: var(--border-thin); box-shadow: 2px 2px 0 var(--ink); }
+.console-page { padding-bottom: 174px; }
+.composer-dock { position: fixed; z-index: 15; right: 0; bottom: calc(70px + var(--safe-bottom)); left: 0; padding: var(--space-2) calc(var(--space-3) + var(--safe-right)) var(--space-2) calc(var(--space-3) + var(--safe-left)); background: var(--bg); border-top: var(--border); }
+.composer { width: min(100%, 900px); margin: auto; }
+.composer textarea { width: 100%; min-height: 58px; max-height: 150px; resize: vertical; }
+.preview-mode .app-shell { padding-top: 60px; }
+.preview-mode .app-header { top: 60px; }
+.preview-mode .fixture-panel { position: fixed; z-index: 50; top: 0; right: 0; bottom: auto; left: 0; display: flex; gap: var(--space-2); align-items: center; height: 60px; padding: 6px 10px; overflow-x: auto; background: var(--purple); border-bottom: var(--border); }
+.fixture-panel select { min-width: 185px; min-height: 44px; height: 44px; border-width: 2px; }
+.fixture-panel button { min-height: 44px; height: 44px; white-space: nowrap; }
+@keyframes page-in { from { opacity: .2; transform: translateY(4px); } }
+@media (min-width: 768px) {
+  .app-shell { padding: 0 0 0 96px; }
+  .app-header { margin-left: -96px; padding-left: calc(116px + var(--space-4)); }
+  .bottom-nav { top: 0; right: auto; bottom: 0; left: 0; width: 96px; grid-template-columns: 1fr; grid-auto-rows: min-content; align-content: center; gap: var(--space-2); padding: var(--space-4); border: 0; border-right: var(--border); }
+  .nav-item { min-height: 66px; }
+  .page { padding: var(--space-6); }
+  .console-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--space-5); align-items: start; }
+  .console-sidebar { position: sticky; top: 94px; grid-column: 2; grid-row: 1; }
+  .timeline-panel { grid-column: 1; grid-row: 1; }
+  .composer-dock { left: 96px; bottom: 0; }
+  .conversation-active .composer-dock { left: 0; }
+  .console-page { padding-bottom: 126px; }
+  .preview-mode .app-shell { padding-top: 60px; }
+  .preview-mode .bottom-nav { top: 60px; }
+  .preview-mode .app-header { top: 60px; }
+}
+@media (max-width: 520px) {
+  .brand > span:last-child { display: none; }
+  .header-route-title { text-align: left; }
+  .header-status .badge { max-width: 94px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}

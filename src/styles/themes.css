@@ -1,0 +1,8 @@
+html[data-theme="dark"] { --bg: #111111; --surface: #1c1c1c; --elevated: #262626; --ink: #f7f4ea; --muted: #bbb5a7; --shadow: #000000; --on-accent: #111111; }
+html[data-theme="dark"] .accent-yellow, html[data-theme="dark"] .accent-cyan, html[data-theme="dark"] .accent-pink, html[data-theme="dark"] .accent-purple, html[data-theme="dark"] .accent-lime, html[data-theme="dark"] .accent-danger,
+html[data-theme="dark"] .btn-primary, html[data-theme="dark"] .btn-cyan, html[data-theme="dark"] .btn-danger,
+html[data-theme="dark"] .banner, html[data-theme="dark"] .approval-card, html[data-theme="dark"] .usage-item,
+html[data-theme="dark"] .app-header, html[data-theme="dark"] .timeline-item[data-role="user"], html[data-theme="dark"] .timeline-item[data-role="system"],
+html[data-theme="dark"] .tool-head, html[data-theme="dark"] .empty-icon, html[data-theme="dark"] .platform-mark,
+html[data-theme="dark"] .nav-item[aria-current="page"], html[data-theme="dark"] .fixture-panel { color: var(--on-accent); }
+@media (hover: hover) { .btn:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--shadow); }.nav-item:hover { background: var(--cyan); background: color-mix(in srgb, var(--cyan) 35%, transparent); } }
