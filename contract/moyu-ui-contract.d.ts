@@ -1,7 +1,8 @@
 export type RequestId = string;
 export type Theme = 'system' | 'light' | 'dark';
-export type Route = 'console' | 'sessions' | 'nodes' | 'accounts' | 'settings' | 'diagnostics';
-export type ApprovalDecision = 'allow' | 'allow_session' | 'deny' | 'cancel';
+export type Route = 'console' | 'conversation' | 'sessions' | 'nodes' | 'accounts' | 'settings' | 'diagnostics';
+export type ApprovalChoice = 'allow' | 'allow_session' | 'deny' | 'cancel';
+export type ApprovalDecision = ApprovalChoice | { allowWithModification: { answers: Record<string, string | string[]> } };
 export type AdapterId = 'claude' | 'codex';
 
 export interface UiIntent<T extends string = string, P = unknown> {
@@ -17,7 +18,11 @@ export type HostEnvelope =
   | { version: 1; type: 'intent.result'; requestId: RequestId; ok: true; data?: unknown }
   | { version: 1; type: 'intent.result'; requestId: RequestId; ok: false; error: UiError };
 
-export interface ViewPatch { op: 'set' | 'remove'; path: string; value?: unknown }
+export type JsonPrimitive = null | boolean | number | string;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type ViewPatch =
+  | { op: 'set'; path: string; value: JsonValue }
+  | { op: 'remove'; path: string };
 export interface UiError {
   code: string;
   summary: string;
@@ -32,10 +37,16 @@ export interface CreateSessionDraft {
   title?: string;
   profileId?: string;
   model?: string;
+  effort?: string;
+  permissionMode?: PermissionMode;
 }
+
+export type PermissionMode = 'plan' | 'auto' | 'acceptEdits';
 
 export interface NodeDraft { nodeId?: string; displayName: string; relayNode: string }
 export interface PairDraft { displayName: string; relayNode: string; pairString: string }
+export interface AskUserQuestionOption { label: string; description?: string }
+export interface AskUserQuestionItem { question: string; header?: string; options?: AskUserQuestionOption[]; multiSelect?: boolean }
 
 export type MoyuIntent =
   | UiIntent<'app.ready', { uiVersion: string }>
@@ -45,7 +56,12 @@ export type MoyuIntent =
   | UiIntent<'session.open', { localSessionId: string }>
   | UiIntent<'session.create', CreateSessionDraft>
   | UiIntent<'session.send', { localSessionId: string; text: string }>
+  | UiIntent<'attachment.pick', { localSessionId: string }>
+  | UiIntent<'attachment.remove', { localSessionId: string; artifactId: string }>
   | UiIntent<'session.saveDraft', { localSessionId?: string; text: string }>
+  | UiIntent<'session.effort.set', { localSessionId: string; effort?: string }>
+  | UiIntent<'session.model.set', { localSessionId: string; model?: string }>
+  | UiIntent<'session.permissionMode.set', { localSessionId: string; permissionMode: PermissionMode }>
   | UiIntent<'session.interrupt', { localSessionId: string }>
   | UiIntent<'session.deleteLocal', { localSessionId: string }>
   | UiIntent<'session.loadOlder', { localSessionId: string; beforeLocalSeq?: number }>
@@ -58,7 +74,7 @@ export type MoyuIntent =
   | UiIntent<'node.delete', { nodeId: string }>
   | UiIntent<'node.pair', { relayNode: string; pairString: string; displayName: string }>
   | UiIntent<'node.pairDraft.save', PairDraft>
-  | UiIntent<'node.manualSetup.open', { displayName?: string; relayNode?: string }>
+  | UiIntent<'node.manualSetup.open', { nodeId?: string }>
   | UiIntent<'node.diagnose', { nodeId: string }>
   | UiIntent<'accounts.activate', { nodeId: string; adapter: AdapterId; profileId: string }>
   | UiIntent<'config.patch', { nodeId: string; patch: ConfigPatch }>
@@ -100,6 +116,10 @@ export interface NodeView {
   overlayState: string;
   backendState: 'unknown' | 'offline' | 'online';
   syncState: 'idle' | 'syncing' | 'current' | 'error';
+  /** Exact configured backend VIP route observed from EasyTier; never inferred from backendState. */
+  peerConnected: boolean;
+  linkMode: 'p2p' | 'relay' | 'unknown';
+  linkObservedAt?: string;
   relayLatencyMs?: number;
   relayLatencyReliable?: boolean;
   lastConnectedAt?: string;
@@ -109,12 +129,22 @@ export interface NodeView {
 export interface LocalSessionView {
   localSessionId: string;
   remoteSessionId?: string;
+  nativeSessionId?: string;
+  resumable?: boolean;
+  nativeMessageCount?: number;
+  nativeCachedMessages?: number;
+  nativeCacheComplete?: boolean;
   nodeId: string;
   kind: AdapterId;
   title: string;
   updatedAt: string;
   profileId?: string;
   model?: string;
+  /** Explicit argv selection, if any. Runtime provider identity is reported per turn. */
+  requestedModel?: string;
+  runtimeModel?: string;
+  effort?: string;
+  permissionMode?: PermissionMode;
   state: 'localOnly' | 'idle' | 'running' | 'completed' | 'failed' | 'ended';
   unread: number;
   lastSeq: number;
@@ -126,28 +156,42 @@ export interface SessionDetailView extends LocalSessionView {
   messages: TimelineItem[];
   hasOlderLocalMessages: boolean;
   composerDraft: string;
+  composerAttachments: ArtifactView[];
   canSend: boolean;
   canInterrupt: boolean;
+  effortLevels: string[];
+  permissionModes: PermissionMode[];
   pendingApproval?: ApprovalView;
   transport?: TransportMetricsView;
   diff?: DiffView;
 }
 
 export type TimelineItem =
-  | { localSeq: number; kind: 'message'; role: 'user' | 'assistant' | 'system'; text: string; createdAt: string }
+  | { localSeq: number; kind: 'message'; role: 'user' | 'assistant' | 'system'; text: string; streaming?: boolean; artifacts?: ArtifactView[]; createdAt: string }
   | { localSeq: number; kind: 'thinking'; text: string; streaming: boolean; createdAt: string }
-  | { localSeq: number; kind: 'tool'; toolCallId: string; tool: string; input?: unknown; output?: string; state: 'running' | 'done' | 'error'; createdAt: string }
+  | { localSeq: number; kind: 'tool'; toolCallId: string; tool: string; input?: unknown; output?: string; artifacts?: ArtifactView[]; state: 'running' | 'done' | 'error'; createdAt: string }
   | { localSeq: number; kind: 'approval'; approval: ApprovalView; createdAt: string }
-  | { localSeq: number; kind: 'usage'; usage: Usage; costUsd?: number; createdAt: string }
+  | { localSeq: number; kind: 'usage'; usage: Usage; costUsd?: number; model?: string; effort?: string; performance?: TurnPerformanceView; createdAt: string }
   | { localSeq: number; kind: 'error'; error: UiError; createdAt: string };
+
+export interface ArtifactView {
+  artifactId: string;
+  mime: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  name: string;
+  size: number;
+  sha256?: string;
+  /** Android appassets same-origin URL backed by the private native cache. */
+  localUrl: string;
+}
 
 export interface ApprovalView {
   approvalId: string;
   kind: 'command' | 'fileChange' | 'permission' | 'mcpElicit' | 'userInput';
   tool?: string;
   summary: string;
+  /** AskUserQuestion carries {questions: AskUserQuestionItem[]}; other tools remain opaque. */
   input?: unknown;
-  choices: ApprovalDecision[];
+  choices: ApprovalChoice[];
   state: 'pending' | 'submitting' | 'allowed' | 'denied' | 'expired';
 }
 
@@ -157,6 +201,12 @@ export interface Usage {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   totalTokens?: number;
+}
+
+/** PC-local observation from accepted input through turn.completed. It includes queueing, CLI,
+ * provider, tool and approval time and is not a provider-native generation benchmark. */
+export interface TurnPerformanceView {
+  observedDurationMs: number;
 }
 
 export interface TransportMetricsView {
@@ -187,13 +237,21 @@ export interface BannerView {
 export interface AdapterCapabilities {
   profiles: boolean;
   models: boolean;
+  /** Native model ids are accepted as free text; this is not a provider availability catalog. */
+  modelSelection: 'freeform' | 'none';
   sandbox: boolean;
   approvalsReviewer: boolean;
-  approvalChoices: ApprovalDecision[];
+  sandboxModes: Array<'read-only' | 'workspace-write' | 'danger-full-access'>;
+  reviewers: Array<'auto_review' | 'user' | 'guardian_subagent'>;
+  approvalPolicies: Array<'untrusted' | 'on-failure' | 'on-request' | 'never'>;
+  approvalChoices: ApprovalChoice[];
   description?: string;
   diff?: boolean;
   interrupt?: boolean;
   resume?: boolean;
+  effortLevels?: string[];
+  permissionModes?: PermissionMode[];
+  streaming?: { text: boolean; thinking: boolean; tools: boolean };
 }
 
 export interface AdapterStatus {
@@ -202,6 +260,10 @@ export interface AdapterStatus {
   available: boolean;
   unavailableReason?: string;
   capabilities: AdapterCapabilities;
+  /** Profile-local native default and final default are read from PC config only. */
+  cliDefaultModel?: string;
+  effectiveModel?: string;
+  modelOverride?: string;
   supportedModels?: string[];
 }
 
@@ -210,7 +272,7 @@ export interface ServerView {
   protocolVersion: 1;
   adapters: AdapterStatus[];
   maxMessageBytes: number;
-  features: { diff: boolean; resume: boolean; eventGapSync: boolean };
+  features: { diff: boolean; resume: boolean; eventGapSync: boolean; sessionEffort?: boolean; sessionModel?: boolean; sessionPermissionMode?: boolean };
 }
 
 export interface AccountProfileView {
@@ -219,6 +281,9 @@ export interface AccountProfileView {
   nativeDefault: boolean;
   hasCredentials: boolean;
   active: boolean;
+  cliDefaultModel?: string;
+  effectiveModel?: string;
+  modelOverride?: string;
 }
 
 export interface AccountAdapterStatus extends AdapterStatus { profiles: AccountProfileView[] }
@@ -226,19 +291,31 @@ export interface AccountSwitchingStatus { nodeId: string; adapters: AccountAdapt
 
 export interface SanitizedConfig {
   defaultAdapter?: AdapterId;
+  /** Persisted explicit override only; absent means inherit the selected Profile's CLI default. */
   model?: string;
+  modelOverride?: string;
+  explicitModel?: boolean;
+  cliDefaultModel?: string;
+  effectiveModel?: string;
+  modelSource?: 'override' | 'cli-default' | 'unknown';
+  modelSelection?: 'freeform' | 'none';
+  /** Compatibility field; an empty list does not mean the provider has no models. */
   availableModels?: string[];
-  approvalPolicy?: 'ask' | 'allow_session' | 'deny';
+  effortLevels?: string[];
+  sandboxModes?: Array<'read-only' | 'workspace-write' | 'danger-full-access'>;
+  reviewers?: Array<'auto_review' | 'user' | 'guardian_subagent'>;
+  approvalPolicies?: Array<'untrusted' | 'on-failure' | 'on-request' | 'never'>;
+  approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  approvalsReviewer?: 'auto_review' | 'user';
+  approvalsReviewer?: 'auto_review' | 'user' | 'guardian_subagent';
 }
 
 export interface ConfigPatch {
   defaultAdapter?: AdapterId;
   model?: string;
-  approvalPolicy?: 'ask' | 'allow_session' | 'deny';
+  approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  approvalsReviewer?: 'auto_review' | 'user';
+  approvalsReviewer?: 'auto_review' | 'user' | 'guardian_subagent';
 }
 
 export interface DiffFileView { path: string; status: 'staged' | 'unstaged' | 'untracked'; patch?: string }

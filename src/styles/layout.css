@@ -1,8 +1,12 @@
 .app-shell { min-height: 100vh; min-height: 100dvh; padding-bottom: calc(78px + var(--safe-bottom)); }
-.app-shell.conversation-active { padding-bottom: 0; }
+.app-shell.conversation-active { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; padding-bottom: 0; }
+.conversation-active > .banner { grid-row: 1; }
+.conversation-active > .conversation-layout { grid-row: 2; min-height: 0; }
+.conversation-active .bottom-nav { display: none; }
 .app-header { position: sticky; z-index: var(--z-nav); top: 0; display: flex; align-items: center; gap: var(--space-3); min-height: calc(64px + var(--safe-top)); padding: calc(var(--space-3) + var(--safe-top)) calc(var(--space-4) + var(--safe-right)) var(--space-3) calc(var(--space-4) + var(--safe-left)); background: var(--yellow); border-bottom: var(--border); }
 .brand { display: flex; align-items: center; gap: 10px; font-size: var(--text-xl); font-weight: var(--weight-black); letter-spacing: -.05em; }
 .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border: var(--border); background: var(--pink); box-shadow: 3px 3px 0 var(--ink); transform: rotate(-3deg); }
+.brand-icon { display: block; width: 34px; height: 34px; object-fit: contain; }
 .header-route-title { flex: 1; min-width: 0; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .header-status { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .header-theme { background: var(--surface); font-size: 1.15rem; }
@@ -25,6 +29,10 @@
 .fixture-panel select { min-width: 185px; min-height: 44px; height: 44px; border-width: 2px; }
 .fixture-panel button { min-height: 44px; height: 44px; white-space: nowrap; }
 @keyframes page-in { from { opacity: .2; transform: translateY(4px); } }
+@keyframes route-old-out { to { opacity: 0; transform: translateX(-8px); } }
+@keyframes route-new-in { from { opacity: 0; transform: translateX(10px); } }
+::view-transition-old(root) { animation: 110ms ease-out both route-old-out; }
+::view-transition-new(root) { animation: 170ms ease-out both route-new-in; }
 @media (min-width: 768px) {
   .app-shell { padding: 0 0 0 96px; }
   .app-header { margin-left: -96px; padding-left: calc(116px + var(--space-4)); }
@@ -35,7 +43,8 @@
   .console-sidebar { position: sticky; top: 94px; grid-column: 2; grid-row: 1; }
   .timeline-panel { grid-column: 1; grid-row: 1; }
   .composer-dock { left: 96px; bottom: 0; }
-  .conversation-active .composer-dock { left: 0; }
+  .conversation-active .bottom-nav { display: grid; }
+  .conversation-active .composer-dock { left: 96px; }
   .console-page { padding-bottom: 126px; }
   .preview-mode .app-shell { padding-top: 60px; }
   .preview-mode .bottom-nav { top: 60px; }
@@ -43,6 +52,11 @@
 }
 @media (max-width: 520px) {
   .brand > span:last-child { display: none; }
+  .brand-icon { width: 30px; height: 30px; }
   .header-route-title { text-align: left; }
   .header-status .badge { max-width: 94px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+}
+.reduce-motion-fixture::view-transition-old(root), .reduce-motion-fixture::view-transition-new(root) { animation: none; }

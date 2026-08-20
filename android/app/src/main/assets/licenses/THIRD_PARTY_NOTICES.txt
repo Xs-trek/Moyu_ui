@@ -1,0 +1,29 @@
+Moyu Android third-party notices
+
+EasyTier 2.6.4
+----------------
+Moyu dynamically links the unmodified libeasytier_ffi.so built from EasyTier v2.6.4
+(commit 8428a89d2dabc94c97d370ec607c6ca142473626). EasyTier is licensed under
+GNU Lesser General Public License version 3. The LGPLv3 and incorporated GPLv3 texts
+are packaged beside this file as EasyTier-LGPL-3.0.txt and GPL-3.0.txt. The shared library remains a separate APK native
+library and can be replaced by rebuilding the app with a compatible library.
+
+Corresponding source: https://github.com/EasyTier/EasyTier/tree/v2.6.4
+
+OkHttp 3.14.9 / Okio
+---------------------
+Copyright Square, Inc. Licensed under the Apache License 2.0.
+
+Moyu
+----
+The Moyu application code is licensed under the Apache License 2.0. The complete text
+is packaged beside this file as Apache-2.0.txt. The bundled WebView UI has no
+third-party JavaScript runtime.
+
+Platform identification marks
+-----------------------------
+The package includes local Anthropic and OpenAI SVG marks solely to identify compatibility
+with Claude Code and Codex CLI. Anthropic, Claude, OpenAI, Codex and their associated marks
+belong to their respective owners. Their inclusion does not imply sponsorship, endorsement or
+affiliation. The assets were obtained from the respective official brand/press materials and
+are not granted for unrelated reuse by the Apache-2.0 software license.

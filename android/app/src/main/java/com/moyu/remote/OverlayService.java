@@ -11,22 +11,29 @@ import android.os.IBinder;
 
 import com.easytier.jni.EasyTierJNI;
 
+import java.time.Instant;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /** Foreground owner for EasyTier no-tun + smoltcp, implemented as a standard service. */
 public final class OverlayService extends Service {
     public static final String ACTION_STATE = "com.moyu.remote.OVERLAY_STATE";
     public static final String EXTRA_STATE = "state";
     public static final String EXTRA_ERROR = "error";
+    public static final String EXTRA_PEER_CONNECTED = "peerConnected";
+    public static final String EXTRA_LINK_MODE = "linkMode";
+    public static final String EXTRA_LINK_OBSERVED_AT = "linkObservedAt";
     private static final String ACTION_START = "com.moyu.remote.START_OVERLAY";
     private static final String ACTION_STOP = "com.moyu.remote.STOP_OVERLAY";
     private static final String EXTRA_NODE = "nodeId";
     private static final int NOTIFICATION_ID = 22;
     private static final String CHANNEL_ID = "moyu-overlay";
     private static volatile PairingConfig pendingPairing;
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledFuture<?> networkInfoTask;
 
     static final class PairingConfig {
         String relay, code;
@@ -64,16 +71,24 @@ public final class OverlayService extends Service {
     private void startNative(String nodeId, PairingConfig pairing) {
         broadcast("starting", null);
         try {
+            cancelNetworkInfo();
             try { EasyTierJNI.stopAllInstances(); } catch (Throwable ignored) { }
             String config;
-            if (pairing != null) config = config("moyu-pair", "rd-pair", pairing.code, "10.144.144.4", pairing.relay, pairing.socksPort);
+            String instanceName;
+            String backendVip = null;
+            if (pairing != null) {
+                instanceName = "moyu-pair";
+                config = config(instanceName, "rd-pair", pairing.code, "10.144.144.4", pairing.relay, pairing.socksPort);
+            }
             else {
                 MoyuApplication app = (MoyuApplication) getApplication();
                 MoyuDatabase.NodeRecord node = app.database().getNode(nodeId);
                 if (node == null) throw new IllegalStateException("节点不存在");
                 String secret = app.secrets().get(node.nodeId, "networkSecret");
                 if (secret == null) throw new IllegalStateException("节点网络密钥不可用");
-                config = config("moyu-" + node.nodeId, node.networkName, secret, node.mobileVip, node.relayNode, node.socksPort);
+                instanceName = "moyu-" + node.nodeId;
+                backendVip = node.backendVip;
+                config = config(instanceName, node.networkName, secret, node.mobileVip, node.relayNode, node.socksPort);
             }
             int parsed = EasyTierJNI.parseConfig(config);
             if (parsed != 0) throw new IllegalStateException(error("EasyTier 配置无效"));
@@ -81,6 +96,7 @@ public final class OverlayService extends Service {
             if (result != 0) throw new IllegalStateException(error("EasyTier 启动失败"));
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification("Overlay 已启动"));
             broadcast("running", null);
+            if (backendVip != null) scheduleNetworkInfo(instanceName, backendVip);
         } catch (Throwable error) {
             broadcast("failed", safeMessage(error));
             pendingPairing = null;
@@ -90,6 +106,7 @@ public final class OverlayService extends Service {
     }
 
     private void stopNative() {
+        cancelNetworkInfo();
         try { EasyTierJNI.stopAllInstances(); } catch (Throwable ignored) { }
         pendingPairing = null;
         broadcast("stopped", null);
@@ -115,9 +132,37 @@ public final class OverlayService extends Service {
     private static String safeMessage(Throwable error) { String value = error.getMessage(); return value == null ? error.getClass().getSimpleName() : value.substring(0, Math.min(value.length(), 240)); }
     private static String error(String fallback) { try { String value = EasyTierJNI.getLastError(); return value == null || value.isEmpty() ? fallback : value; } catch (Throwable ignored) { return fallback; } }
 
+    private void scheduleNetworkInfo(String instanceName, String backendVip) {
+        networkInfoTask = worker.scheduleWithFixedDelay(() -> {
+            String observedAt = Instant.now().toString();
+            String raw = null;
+            try { raw = EasyTierJNI.collectNetworkInfos(4); } catch (Throwable ignored) { }
+            EasyTierLinkInfo info = EasyTierLinkInfo.inspect(raw, instanceName, backendVip, observedAt);
+            broadcastLinkInfo(info);
+            String text = !info.peerConnected ? "Overlay 已启动 · PC 组网节点未确认"
+                    : EasyTierLinkInfo.MODE_P2P.equals(info.linkMode) ? "Overlay 已启动 · P2P"
+                    : EasyTierLinkInfo.MODE_RELAY.equals(info.linkMode) ? "Overlay 已启动 · Relay"
+                    : "Overlay 已启动 · 链路未知";
+            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification(text));
+        }, 0, 3, TimeUnit.SECONDS);
+    }
+
+    private void cancelNetworkInfo() {
+        if (networkInfoTask != null) networkInfoTask.cancel(false);
+        networkInfoTask = null;
+    }
+
     private void broadcast(String state, String error) {
         Intent intent = new Intent(ACTION_STATE).setPackage(getPackageName()).putExtra(EXTRA_STATE, state);
         if (error != null) intent.putExtra(EXTRA_ERROR, error);
+        sendBroadcast(intent);
+    }
+
+    private void broadcastLinkInfo(EasyTierLinkInfo info) {
+        Intent intent = new Intent(ACTION_STATE).setPackage(getPackageName())
+                .putExtra(EXTRA_PEER_CONNECTED, info.peerConnected)
+                .putExtra(EXTRA_LINK_MODE, info.linkMode)
+                .putExtra(EXTRA_LINK_OBSERVED_AT, info.observedAt);
         sendBroadcast(intent);
     }
 
@@ -134,5 +179,5 @@ public final class OverlayService extends Service {
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
-    @Override public void onDestroy() { worker.shutdownNow(); super.onDestroy(); }
+    @Override public void onDestroy() { cancelNetworkInfo(); worker.shutdownNow(); super.onDestroy(); }
 }

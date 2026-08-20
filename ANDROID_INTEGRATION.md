@@ -1,4 +1,4 @@
-# Moyu Android v0.0.2 integration
+# Moyu Android v0.0.3 integration
 
 This project keeps the HTML presentation layer separate from Android glue:
 
@@ -10,7 +10,9 @@ This project keeps the HTML presentation layer separate from Android glue:
 ## Supported package
 
 - Application id: `com.moyu.remote`
-- Version: `0.0.2` (`versionCode 2`)
+- Version: `0.0.3` (`versionCode 3`)
+- Claude session controls: `session.permissionMode.set` exposes only `plan`, `auto`, `acceptEdits`; `session.model.set` changes subsequent turns only. Both are rejected while a turn is running.
+- Timeline compatibility: the native cache removes legacy `[approval:*]` / `[error:*]` system duplicates and keeps structured approval/error cards as the sole source of truth.
 - Minimum Android: 8.0 / API 26
 - ABI: `arm64-v8a`
 - Bundled EasyTier: v2.6.4, dynamically linked as a separate LGPL shared library
@@ -27,12 +29,12 @@ cd android
 .\gradlew.bat :app:assembleDebug :app:lintDebug --no-daemon
 ```
 
-The UI build is copied automatically into `app/src/main/assets/ui`. Preview fixtures are excluded from the APK. The two arm64 native libraries must exist under `android/app/src/main/jniLibs/arm64-v8a/`; `libeasytier_ffi.so` corresponds to upstream EasyTier tag `v2.6.4` at commit `8428a89d2dabc94c97d370ec607c6ca142473626`.
+The UI build is copied automatically into `app/src/main/assets/ui`. Preview fixtures are excluded from the APK. The repository includes the two fixed-hash arm64 native libraries under `android/app/src/main/jniLibs/arm64-v8a/`; every release build verifies them before packaging. `libeasytier_ffi.so` corresponds to upstream EasyTier tag `v2.6.4` at commit `8428a89d2dabc94c97d370ec607c6ca142473626`.
 
 ## First connection
 
-1. On the PC, run `moyu init` once and configure the relay node. Add any Claude `.env` profiles and Codex `CODEX_HOME` profiles as described by `moyu -help`.
-2. Start Moyu, then run `moyu pair`. The PC prints `<8-character-code>:<gateway-port>`.
+1. On the PC, run `moyu init` once and configure the relay node. After the background gateway is ready, the same command prints `<8-character-code>:<gateway-port>`. Add any Claude `.env` profiles and Codex `CODEX_HOME` profiles as described by `moyu -help`.
+2. If the five-minute string expires or another phone must be paired, run `moyu pair` to print a fresh one.
 3. In Android, open Nodes, choose Pair, enter a display name, the same relay node and the pairing string.
 4. The native layer joins the short-lived pairing overlay, receives the real network name/secret and bearer token, stores secrets with Android Keystore, then reconnects through the real overlay.
 

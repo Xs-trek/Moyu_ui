@@ -14,8 +14,8 @@ android {
         applicationId moyuLocalTest ? "com.moyu.remote.localtest" : "com.moyu.remote"
         minSdkVersion 26
         targetSdkVersion 34
-        versionCode 2
-        versionName "0.0.2"
+        versionCode 3
+        versionName "0.0.3"
 
         // The local-test APK runs on the installed x86 emulator and never loads EasyTier JNI.
         // Normal debug/release APKs remain arm64 and keep the production overlay path.
@@ -42,6 +42,10 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
+
     packagingOptions {
         doNotStrip '*/arm64-v8a/libeasytier_android_jni.so'
         doNotStrip '*/arm64-v8a/libeasytier_ffi.so'
@@ -50,12 +54,20 @@ android {
 
 def uiDist = file('../../dist')
 def uiAssets = file('src/main/assets/ui')
+def nativeArm64 = file('src/main/jniLibs/arm64-v8a')
+def expectedNativeSha256 = [
+    'libeasytier_android_jni.so': 'B92A64620D084F9511AD03701CE9A9F62FF23268B8137B6A8337D367FE287BA9',
+    'libeasytier_ffi.so': 'C4B7B42C6EB809869AAD9CFAFD2AE5877BFAC0AB827416FB6F2F525F457407D5'
+]
 
 tasks.register('syncMoyuUi', Sync) {
     dependsOn ':app:verifyMoyuUi'
     from(uiDist) {
         exclude 'preview.html'
+        exclude 'phone.html'
         exclude 'assets/preview-*'
+        exclude 'assets/phone-*'
+        exclude 'assets/phone-preview-*'
     }
     into uiAssets
 }
@@ -68,9 +80,35 @@ tasks.register('verifyMoyuUi') {
     }
 }
 
+tasks.register('verifyNativeLibraries') {
+    doLast {
+        expectedNativeSha256.each { name, expected ->
+            def nativeFile = new File(nativeArm64, name)
+            if (!nativeFile.isFile()) {
+                throw new GradleException("Missing native library: ${nativeFile}")
+            }
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            nativeFile.withInputStream { input ->
+                byte[] buffer = new byte[8192]
+                for (int read = input.read(buffer); read != -1; read = input.read(buffer)) {
+                    digest.update(buffer, 0, read)
+                }
+            }
+            def actual = digest.digest().collect { String.format('%02X', it & 0xff) }.join()
+            if (actual != expected) {
+                throw new GradleException("SHA-256 mismatch for ${name}: expected ${expected}, got ${actual}")
+            }
+        }
+    }
+}
+
 preBuild.dependsOn syncMoyuUi
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach {
+    dependsOn verifyNativeLibraries
+}
 
 dependencies {
     implementation 'com.squareup.okhttp3:okhttp:3.14.9'
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.10.3'
 }

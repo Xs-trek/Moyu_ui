@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none';">
+    <title>moyu 手机画幅预览</title>
+    <link rel="stylesheet" href="./src/styles/phone-preview.css">
+  </head>
+  <body>
+    <header class="preview-toolbar">
+      <div>
+        <strong>moyu 手机画幅</strong>
+        <span id="viewport-label">390 × 844</span>
+      </div>
+      <nav aria-label="预览尺寸">
+        <button type="button" data-viewport="360">360×800</button>
+        <button type="button" data-viewport="390" aria-pressed="true">390×844</button>
+        <button type="button" data-viewport="412">412×915</button>
+        <button type="button" data-viewport="430">430×932</button>
+        <button type="button" data-viewport="768">768×1024</button>
+        <a href="./preview.html" target="_blank" rel="noopener">独立打开</a>
+      </nav>
+    </header>
+    <main>
+      <p>在设备框内使用顶部 fixture / 页面 / 主题面板，可预览全部功能状态。</p>
+      <div id="device-frame" class="device-frame viewport-390">
+        <iframe src="./preview.html" title="moyu 完整交互预览"></iframe>
+      </div>
+    </main>
+    <script type="module" src="./src/phone-preview.js"></script>
+  </body>
+</html>

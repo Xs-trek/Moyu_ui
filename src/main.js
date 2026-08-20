@@ -1,13 +1,14 @@
 import { initBridge, sendIntent } from './bridge.js';
-import { bindInteractions, render } from './render.js';
+import { bindInteractions, render, renderFocusPanel, renderNotice } from './render.js';
+import { createRenderGate } from './render-gate.js';
 import { getState, subscribe } from './state.js';
 
 const media = window.matchMedia('(prefers-color-scheme: dark)');
-let pointerInteraction = false;
-let editingControl = false;
-let renderQueued = false;
 let releaseTimer = 0;
 let editReleaseTimer = 0;
+let selectionReleaseTimer = 0;
+let activeSelectionScope = null;
+let clampingSelection = false;
 
 function syncSystemTheme() {
   const view = getState().view;
@@ -19,32 +20,41 @@ function renderCurrent(state = getState()) {
   syncSystemTheme();
 }
 
-subscribe((state) => {
-  if (pointerInteraction || editingControl) {
-    renderQueued = true;
-    return;
+const renderGate = createRenderGate(
+  renderCurrent,
+  {
+    getState,
+    isChoiceMenuOpen: () => Boolean(document.querySelector('.choice-menu:not([hidden])')),
+    isInteractionSurfaceOpen: () => Boolean(
+      document.querySelector('.conversation-outline-shell.open, #focus-root .focus-layer')
+    )
   }
-  renderCurrent(state);
+);
+
+subscribe((state, change) => {
+  if (change?.scope === 'toast') { renderNotice(state.notices); return; }
+  if (change?.scope === 'focus') { renderFocusPanel(state); return; }
+  renderGate.request(state, change);
 });
 
 function flushQueuedRender() {
-  if (pointerInteraction || editingControl || !renderQueued) return;
-  renderQueued = false;
-  renderCurrent();
+  renderGate.flush();
 }
 
 function beginPointerInteraction() {
   window.clearTimeout(releaseTimer);
-  pointerInteraction = true;
+  renderGate.setPointerInteraction(true);
 }
 
 function endPointerInteraction() {
   window.clearTimeout(releaseTimer);
-  /* Keep the tapped DOM node alive through the synthetic click dispatched after pointerup. */
+  /* Android selection handles can appear after pointerup/contextmenu. Give the
+   * selectionchange event time to acquire the render lease before flushing. */
   releaseTimer = window.setTimeout(() => {
-    pointerInteraction = false;
+    syncSelectionLease();
+    renderGate.setPointerInteraction(false);
     flushQueuedRender();
-  }, 0);
+  }, 180);
 }
 
 function isEditableControl(node) {
@@ -54,16 +64,75 @@ function isEditableControl(node) {
 document.addEventListener('focusin', (event) => {
   if (!isEditableControl(event.target)) return;
   window.clearTimeout(editReleaseTimer);
-  editingControl = true;
+  renderGate.setEditingControl(true);
 }, true);
 
 document.addEventListener('focusout', () => {
   window.clearTimeout(editReleaseTimer);
   editReleaseTimer = window.setTimeout(() => {
-    editingControl = isEditableControl(document.activeElement);
+    renderGate.setEditingControl(isEditableControl(document.activeElement));
     flushQueuedRender();
-  }, 0);
+  }, 160);
 }, true);
+
+function hasTextSelection() {
+  const selection = document.getSelection?.();
+  return Boolean(selection && selection.rangeCount && !selection.isCollapsed && String(selection).trim());
+}
+
+function scopeForNode(node) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  return element?.closest?.('[data-selection-scope]') || null;
+}
+
+function keepSelectionInScope() {
+  if (clampingSelection || !activeSelectionScope?.isConnected) return;
+  const selection = document.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+  if (scopeForNode(selection.anchorNode) === activeSelectionScope && scopeForNode(selection.focusNode) === activeSelectionScope) return;
+  const range = document.createRange();
+  range.selectNodeContents(activeSelectionScope);
+  clampingSelection = true;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  clampingSelection = false;
+}
+
+function syncSelectionLease() {
+  window.clearTimeout(selectionReleaseTimer);
+  const selection = document.getSelection?.();
+  if (!activeSelectionScope && selection && !selection.isCollapsed) {
+    activeSelectionScope = scopeForNode(selection.anchorNode) || scopeForNode(selection.focusNode);
+  }
+  keepSelectionInScope();
+  const active = hasTextSelection();
+  renderGate.setTextSelection(active);
+  if (!active) selectionReleaseTimer = window.setTimeout(() => {
+    activeSelectionScope = null;
+    flushQueuedRender();
+  }, 160);
+}
+
+document.addEventListener('selectstart', (event) => {
+  activeSelectionScope = event.target.closest?.('[data-selection-scope]') || null;
+  renderGate.setTextSelection(Boolean(activeSelectionScope));
+}, true);
+document.addEventListener('selectionchange', syncSelectionLease);
+document.addEventListener('contextmenu', () => {
+  renderGate.setTextSelection(true);
+  window.setTimeout(syncSelectionLease, 0);
+}, true);
+document.addEventListener('compositionstart', () => renderGate.setComposingText(true), true);
+document.addEventListener('compositionend', () => {
+  window.setTimeout(() => { renderGate.setComposingText(false); flushQueuedRender(); }, 160);
+}, true);
+
+document.addEventListener('moyu:choice-menu-change', () => {
+  window.setTimeout(flushQueuedRender, 0);
+});
+document.addEventListener('moyu:interaction-surface-change', () => {
+  window.setTimeout(flushQueuedRender, 0);
+});
 
 document.addEventListener('pointerdown', beginPointerInteraction, true);
 document.addEventListener('pointerup', endPointerInteraction, true);
@@ -74,5 +143,5 @@ renderCurrent();
 initBridge();
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') sendIntent('app.ready', { uiVersion: '0.0.2' });
+  if (document.visibilityState === 'visible') sendIntent('app.ready', { uiVersion: '0.0.3' });
 });
