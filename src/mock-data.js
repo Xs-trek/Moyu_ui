@@ -3,23 +3,23 @@ const ago = (minutes) => new Date(new Date(now).getTime() - minutes * 60000).toI
 
 const nodeA = {
   nodeId: 'node-studio', displayName: '工作室 PC', relayNode: 'relay.demo.invalid:11010', configured: true, active: true,
-  overlayState: 'online', backendState: 'online', syncState: 'current', relayLatencyMs: 42, relayLatencyReliable: true,
+  overlayState: 'online', backendState: 'online', syncState: 'current', peerConnected: true, linkMode: 'p2p', linkObservedAt: ago(1), relayLatencyMs: 42, relayLatencyReliable: true,
   lastConnectedAt: ago(4), secretState: { token: true, networkSecret: true }
 };
 const nodeB = {
   nodeId: 'node-home', displayName: '家中主机', relayNode: 'relay-backup.demo.invalid:11010', configured: true, active: false,
-  overlayState: 'offline', backendState: 'offline', syncState: 'idle', relayLatencyMs: 91, relayLatencyReliable: false,
+  overlayState: 'offline', backendState: 'offline', syncState: 'idle', peerConnected: false, linkMode: 'unknown', relayLatencyMs: 91, relayLatencyReliable: false,
   lastConnectedAt: ago(180), secretState: { token: true, networkSecret: true }
 };
 const nodeMissing = {
   nodeId: 'node-new', displayName: '新笔记本', relayNode: '尚未设置', configured: false, active: false,
-  overlayState: 'idle', backendState: 'unknown', syncState: 'idle', secretState: { token: false, networkSecret: false }
+  overlayState: 'idle', backendState: 'unknown', syncState: 'idle', peerConnected: false, linkMode: 'unknown', secretState: { token: false, networkSecret: false }
 };
 
 const baseSessions = [
-  { localSessionId: 'session-claude', remoteSessionId: 'remote-a', nodeId: 'node-studio', kind: 'claude', title: '修复移动端登录流程', updatedAt: ago(2), profileId: 'claude-work', model: 'claude-sonnet', effort: 'high', state: 'running', unread: 2, lastSeq: 12, preview: '我已经定位到 token 刷新竞态…' },
+  { localSessionId: 'session-claude', remoteSessionId: 'remote-a', nodeId: 'node-studio', kind: 'claude', title: '修复移动端登录流程', updatedAt: ago(2), profileId: 'claude-work', model: 'claude-sonnet', effort: 'high', permissionMode: 'acceptEdits', state: 'running', unread: 2, lastSeq: 12, preview: '我已经定位到 token 刷新竞态…' },
   { localSessionId: 'session-codex', remoteSessionId: 'remote-b', nodeId: 'node-studio', kind: 'codex', title: '重构缓存模块', updatedAt: ago(35), profileId: 'codex-main', model: 'gpt-5.2-codex', effort: 'medium', state: 'completed', unread: 0, lastSeq: 38, preview: '全部测试已通过，缓存命中率保持不变。' },
-  { localSessionId: 'session-local', nodeId: 'node-home', kind: 'claude', title: '离线需求草稿', updatedAt: ago(180), state: 'localOnly', unread: 0, lastSeq: 4, preview: '等待节点恢复在线后继续。' },
+  { localSessionId: 'session-local', nativeSessionId: '11111111-1111-4111-8111-111111111111', resumable: true, nativeMessageCount: 12, nativeCachedMessages: 8, nativeCacheComplete: false, nodeId: 'node-home', kind: 'claude', title: '离线需求草稿', updatedAt: ago(180), state: 'localOnly', unread: 0, lastSeq: 8, preview: '等待节点恢复在线后继续。' },
   { localSessionId: 'session-old', nodeId: 'node-studio', kind: 'codex', title: '诊断构建失败', updatedAt: ago(1440), profileId: 'native-codex', state: 'failed', unread: 1, lastSeq: 19, preview: '队列已满，任务没有自动重试。' }
 ];
 
@@ -30,12 +30,12 @@ const baseMessages = [
   { localSeq: 4, kind: 'tool', toolCallId: 'tool-1', tool: 'rg', input: { pattern: 'refreshToken', path: 'src/auth' }, output: 'src/auth/session.ts:48: refreshToken\nsrc/auth/guard.ts:91: refreshToken', state: 'done', createdAt: ago(15) },
   { localSeq: 5, kind: 'message', role: 'assistant', text: '问题来自两个页面恢复事件同时进入刷新分支。当前互斥锁只包裹请求，没有覆盖响应写回，因此较旧响应会覆盖新 token。', createdAt: ago(12) },
   { localSeq: 6, kind: 'tool', toolCallId: 'tool-2', tool: 'apply_patch', input: { file: 'src/auth/session.ts', change: '将请求与写回纳入同一版本门控' }, output: 'Done!', state: 'done', createdAt: ago(9) },
-  { localSeq: 7, kind: 'usage', model: 'claude-sonnet', effort: 'high', usage: { inputTokens: 3821, outputTokens: 906, cacheReadTokens: 1400, cacheWriteTokens: 320 }, createdAt: ago(8) },
+  { localSeq: 7, kind: 'usage', model: 'claude-sonnet', effort: 'high', usage: { inputTokens: 3821, outputTokens: 906, cacheReadTokens: 1400, cacheWriteTokens: 320 }, costUsd: 0.0187, performance: { observedDurationMs: 14600 }, createdAt: ago(8) },
   { localSeq: 8, kind: 'message', role: 'assistant', text: '修复完成。我增加了单飞请求和响应版本检查，并补了页面同时恢复的回归测试。', createdAt: ago(5) }
 ];
 
 const activeSession = {
-  ...baseSessions[0], cwd: 'D:/projects/mobile-app', messages: baseMessages, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], hasOlderLocalMessages: true, composerDraft: '', canSend: true, canInterrupt: true,
+  ...baseSessions[0], cwd: 'D:/projects/mobile-app', messages: baseMessages, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], permissionModes: ['plan', 'auto', 'acceptEdits'], hasOlderLocalMessages: true, composerDraft: '', composerAttachments: [], canSend: false, canInterrupt: true,
   transport: { phoneBackendRttMs: 78, backendCliQueueMs: 18, backendCliDispatchMs: 11, cliFirstEventMs: 624, relayLatencyMs: 42, observedAt: ago(1) },
   diff: { isGitRepo: true, summary: { staged: 1, unstaged: 1, untracked: 1 }, files: [
     { path: 'src/auth/session.ts', status: 'unstaged', patch: '@@ -48,6 +48,9 @@\n- return refresh()\n+ const version = ++refreshVersion\n+ const result = await refresh()\n+ if (version === refreshVersion) commit(result)' },
@@ -45,8 +45,8 @@ const activeSession = {
 };
 
 const adapters = [
-  { adapter: 'claude', displayName: 'Claude Code', available: true, capabilities: { profiles: true, models: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], sandbox: false, approvalsReviewer: false, approvalChoices: ['allow', 'allow_session', 'deny'], description: '支持 env profile、思考流与会话内授权' }, supportedModels: ['claude-sonnet', 'claude-opus'] },
-  { adapter: 'codex', displayName: 'Codex CLI', available: true, capabilities: { profiles: true, models: true, effortLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'], sandbox: true, approvalsReviewer: true, approvalChoices: ['allow', 'deny', 'cancel'], description: '支持 CODEX_HOME、sandbox 与 approvals reviewer' }, supportedModels: ['gpt-5.2-codex', 'gpt-5.1-codex-mini'] }
+  { adapter: 'claude', displayName: 'Claude Code', available: true, capabilities: { profiles: true, models: true, modelSelection: 'freeform', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], permissionModes: ['plan', 'auto', 'acceptEdits'], sandbox: false, approvalsReviewer: false, sandboxModes: [], reviewers: [], approvalPolicies: ['on-request', 'never'], approvalChoices: ['allow', 'allow_session', 'deny'], streaming: { text: true, thinking: true, tools: true }, description: '支持原生 Plan / Auto / Accept Edits 与会话内授权' }, supportedModels: ['claude-sonnet', 'claude-opus'] },
+  { adapter: 'codex', displayName: 'Codex CLI', available: true, capabilities: { profiles: true, models: true, modelSelection: 'freeform', effortLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'], sandbox: true, approvalsReviewer: true, sandboxModes: ['workspace-write', 'read-only', 'danger-full-access'], reviewers: ['auto_review', 'user', 'guardian_subagent'], approvalPolicies: ['untrusted', 'on-failure', 'on-request', 'never'], approvalChoices: ['allow', 'deny', 'cancel'], streaming: { text: true, thinking: true, tools: true }, description: '支持 CODEX_HOME、sandbox 与 approvals reviewer' }, supportedModels: ['gpt-5.2-codex', 'gpt-5.1-codex-mini'] }
 ];
 
 export function baseView() {
@@ -55,7 +55,7 @@ export function baseView() {
     pairDraft: { displayName: '', relayNode: '', pairString: '' },
     connection: { state: 'online', nodeId: 'node-studio', summary: '工作室 PC 已连接并同步', phoneBackendRttMs: 78, lastOnlineAt: ago(0) },
     nodes: [nodeA], sessions: baseSessions, activeSession,
-    server: { version: 'v0.0.2', protocolVersion: 1, adapters, maxMessageBytes: 1048576, features: { diff: true, resume: true, eventGapSync: true } },
+    server: { version: 'v0.0.3', protocolVersion: 1, adapters, maxMessageBytes: 1048576, features: { diff: true, resume: true, eventGapSync: true } },
     accounts: { nodeId: 'node-studio', adapters: [
       { ...adapters[0], profiles: [
         { profileId: 'native-claude', displayName: 'Native default', nativeDefault: true, hasCredentials: true, active: false },
@@ -68,15 +68,24 @@ export function baseView() {
         { profileId: 'codex-review', displayName: '审查 CODEX_HOME', nativeDefault: false, hasCredentials: false, active: false }
       ] }
     ] },
-    config: { defaultAdapter: 'claude', model: 'claude-sonnet', availableModels: ['claude-sonnet', 'claude-opus', 'gpt-5.2-codex'], approvalPolicy: 'ask', sandbox: 'workspace-write', approvalsReviewer: 'auto_review' },
-    diagnostics: { net: { mode: 'TUN', selectedNode: 'SG · Relay', tunnel: 'active' }, transport: activeSession.transport, lastSyncAt: ago(1), backendVersion: 'v0.0.2', protocolVersion: 1, notes: ['耗时均为 Android glue 与后端提供的聚合观测。', 'Relay TCP 延迟不代表 Provider 网络延迟。'] },
+    config: { defaultAdapter: 'claude', model: 'claude-sonnet', availableModels: ['claude-sonnet', 'claude-opus', 'gpt-5.2-codex'], modelSelection: 'freeform', approvalPolicies: ['on-request', 'never'], approvalPolicy: 'on-request', sandboxModes: [], reviewers: [] },
+    diagnostics: { net: { mode: 'TUN', selectedNode: 'SG · Relay', tunnel: 'active' }, transport: activeSession.transport, lastSyncAt: ago(1), backendVersion: 'v0.0.3', protocolVersion: 1, notes: ['耗时均为 Android glue 与后端提供的聚合观测。', 'Relay TCP 延迟不代表 Provider 网络延迟。'] },
     ui: { pendingRequestIds: [] }
   };
 }
 
 function clone(view) { return JSON.parse(JSON.stringify(view)); }
-function sessionWith(messages, overrides = {}) { return { ...clone(activeSession), messages, ...overrides }; }
+function sessionWith(messages, overrides = {}) {
+  const session = { ...clone(activeSession), messages, ...overrides };
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'canSend')) session.canSend = session.state !== 'running';
+  return session;
+}
 const pendingApproval = { approvalId: 'approval-42', kind: 'command', tool: 'shell', summary: '运行数据库迁移命令', input: { command: 'npm run migrate', cwd: 'D:/projects/mobile-app' }, choices: ['allow', 'allow_session', 'deny'], state: 'pending' };
+const askUserApproval = { approvalId: 'approval-ask', kind: 'userInput', tool: 'AskUserQuestion', summary: 'Claude 需要你补充实现偏好', input: { questions: [
+  { header: '存储方式', question: '会话记录优先保存在哪里？', options: [{ label: '仅本机', description: '只写入 Android 私有 SQLite。' }, { label: '跟随后端', description: '以后端历史为准并缓存到本机。' }], multiSelect: false },
+  { header: '展示信息', question: '卡片上需要显示哪些用量？', options: [{ label: '输入输出' }, { label: '缓存读写' }, { label: '上下文窗口' }], multiSelect: true }
+] }, choices: ['deny', 'cancel'], state: 'pending' };
+const exitPlanApproval = { approvalId: 'approval-plan', kind: 'userInput', tool: 'ExitPlanMode', summary: 'Claude 已完成计划，是否进入实现？', input: { plan: '按已确认范围实现并运行定向测试。' }, choices: ['allow', 'deny', 'cancel'], state: 'pending' };
 
 export const fixtures = [
   ['no-node', '01 · 无节点', (v) => Object.assign(v, { route: 'console', nodes: [], sessions: [], activeSession: undefined, activeNodeId: undefined, activeLocalSessionId: undefined, connection: { state: 'offline', summary: '尚未配置节点' } })],
@@ -88,7 +97,7 @@ export const fixtures = [
   ['claude-session', '07 · Claude 活跃会话', () => {}],
   ['codex-session', '08 · Codex 活跃会话', (v) => { v.activeSession = sessionWith(baseMessages, { ...baseSessions[1], effortLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'], cwd: 'D:/projects/cache-service', canInterrupt: false }); v.activeLocalSessionId = 'session-codex'; }],
   ['thinking-stream', '09 · Thinking 流', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'thinking', text: '正在分析多个可能的竞态路径…', streaming: true, createdAt: now }]); }],
-  ['text-stream', '10 · 文本流', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'message', role: 'assistant', text: '我正在逐步验证修复，当前已经确认状态机不会在', createdAt: now }]); }],
+  ['text-stream', '10 · 文本流', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'message', role: 'assistant', text: '我正在逐步验证修复，当前已经确认状态机不会在', streaming: true, createdAt: now }]); }],
   ['tool-running', '11 · 工具运行中', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'tool', toolCallId: 't9', tool: 'npm test', input: { suite: 'auth' }, output: 'RUN auth/session.test.ts\n ✓ prevents duplicated refresh\n … waiting', state: 'running', createdAt: now }]); }],
   ['long-output', '12 · 超长工具输出', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'tool', toolCallId: 't9', tool: 'test runner', output: Array.from({ length: 60 }, (_, i) => `${String(i + 1).padStart(2, '0')}  PASS auth case ${i + 1}`).join('\n'), state: 'done', createdAt: now }]); }],
   ['approval-pending', '13 · 等待审批', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'approval', approval: pendingApproval, createdAt: now }], { pendingApproval }); }],
@@ -108,7 +117,18 @@ export const fixtures = [
   ['metrics-empty', '27 · 耗时均不可测', (v) => { v.diagnostics.transport = {}; v.activeSession.transport = {}; v.route = 'diagnostics'; }],
   ['degraded', '28 · 连接降级', (v) => { v.connection = { state: 'degraded', summary: '可读取本地历史，实时事件可能延迟', phoneBackendRttMs: 820 }; v.ui.globalBanner = { level: 'warning', text: '连接质量较差；AI 输入不会在断线后自动重放。' }; }],
   ['danger-access', '29 · danger-full-access 确认', (v) => { v.route = 'settings'; v.ui.previewModal = 'danger'; }],
-  ['reduced-motion', '30 · 低动画模式', (v) => { v.ui.globalBanner = { level: 'info', text: '低动画 fixture：系统 prefers-reduced-motion 时会禁用过渡与循环动画。' }; }]
+  ['reduced-motion', '30 · 低动画模式', (v) => { v.ui.reducedMotion = true; v.ui.globalBanner = { level: 'info', text: '低动画 fixture 已强制禁用过渡、循环动画与平滑滚动。' }; }],
+  ['ask-user-question', '31 · Claude 原生问题', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'approval', approval: askUserApproval, createdAt: now }], { pendingApproval: askUserApproval }); }],
+  ['exit-plan-mode', '32 · Claude 退出计划', (v) => { v.activeSession = sessionWith([...baseMessages, { localSeq: 9, kind: 'approval', approval: exitPlanApproval, createdAt: now }], { pendingApproval: exitPlanApproval }); }],
+  ['codex-long-title', '33 · Codex 长标题卡片', (v) => {
+    const nativeCodex = {
+      ...baseSessions[1], localSessionId: 'session-codex-long', remoteSessionId: undefined,
+      nativeSessionId: '22222222-2222-4222-8222-222222222222', state: 'localOnly',
+      title: 'C:\\Users\\Sasha\\projects\\codex-workspace\\src\\features\\unbreakable_identifier_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      preview: 'rollout-2026-08-13T00-00-00-2222222222222222222222222222222222222222222222222222222222222222.jsonl'
+    };
+    v.route = 'sessions'; v.sessions = [nativeCodex, ...v.sessions]; v.activeSession = undefined; v.activeLocalSessionId = undefined;
+  }]
 ];
 
 export function makeFixture(id, theme = 'light') {

@@ -1,6 +1,11 @@
 * { box-sizing: border-box; }
-html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font-sans); overflow-x: hidden; }
-body { min-height: 100vh; min-height: 100dvh; font-size: var(--text-md); line-height: 1.45; }
+html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font-sans); }
+html { overflow-x: hidden; }
+body { min-height: 100vh; min-height: 100dvh; font-size: var(--text-md); line-height: 1.45; -webkit-user-select: none; user-select: none; }
+input, textarea, [contenteditable="true"], [data-selection-scope] { -webkit-user-select: text; user-select: text; }
+/* A focused reader/editor is the only selectable surface while it is open.
+ * This keeps Android WebView's native “Select all” inside the focused item. */
+body.focus-open #app [data-selection-scope] { -webkit-user-select: none; user-select: none; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button, select, input, textarea { min-height: 44px; }
 button { cursor: pointer; }
@@ -22,4 +27,5 @@ img, svg { max-width: 100%; }
 .space-between { justify-content: space-between; }
 .grow { flex: 1; min-width: 0; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+.reduce-motion-fixture *, .reduce-motion-fixture *::before, .reduce-motion-fixture *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 @media (prefers-contrast: more) { :root { --border: 4px solid var(--ink); --border-thin: 3px solid var(--ink); } .muted { color: var(--ink); } }

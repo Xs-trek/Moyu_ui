@@ -2,7 +2,7 @@
 
 ## 页面与辅助界面
 
-- [x] Console：离线本地历史、平台/Profile/Model 元数据、完整时间线、composer、interrupt、Diff、文件目录。
+- [x] Console：离线本地历史、平台/Profile/Model 元数据、活动会话摘要、Diff 与完整会话入口；不重复时间线或 composer。
 - [x] Sessions：搜索，按节点/平台/状态筛选，unread，本地/远端状态，二次删除确认，空状态，加载更早。
 - [x] Nodes：多节点、激活状态、relay、配置布尔状态、overlay/backend/sync、连接/断开/诊断/配对/原生配置、二次删除确认。
 - [x] Accounts：Claude env 与 Codex CODEX_HOME Profile、native default、凭据布尔值、激活与冻结说明。
@@ -14,10 +14,17 @@
 - [x] 会话列表明确区分仅本地与远端热会话，并在同步空列表时展示骨架屏。
 - [x] 节点编辑通过带预填显示名/relay 的 `node.manualSetup.open` 交给原生层。
 - [x] 状态组件：全局 banner、toast、skeleton、empty、网络/鉴权/限流错误、审批过期。
+- [x] 完整会话顶部默认只显示平台、连接、节点和信息按钮；工作目录/Profile/Model/上下文按会话折叠展开。
+- [x] Claude 只显示 Plan / Auto / Accept Edits；模式和模型仅由用户在空闲时切换，失败输入不自动重发。
+- [x] 请求模型与本轮实际模型分开投影；兼容端返回的模型身份不会覆盖用户选择。
+- [x] 用户/助手正文常显；思考、已完成工具、已处理审批、真实 system 与孤立用量默认折叠。
+- [x] 审批/失败不再生成 system 文本副本；Android 清理旧 `[approval:*]` / `[error:*]` 行。
+- [x] 路由切换使用 feature-detected View Transition；Android 11/低动画下安全回退，流式刷新不触发路由动画。
+- [x] Claude Code 与 Codex CLI 使用随包分发的真实本地图标，文字可访问名称不依赖图形辨识。
 
 ## Fixture 与主题矩阵
 
-以下 30 组均需在 `light` 和 `dark` 下检查；`system` 额外验证系统切换：
+以下 33 组均需在 `light` 和 `dark` 下检查；`system` 额外验证系统切换：
 
 1. 无节点
 2. 离线本地历史
@@ -49,18 +56,22 @@
 28. 连接降级
 29. danger-full-access 确认
 30. 低动画模式
+31. Claude AskUserQuestion 结构化问题
+32. Claude ExitPlanMode 退出计划确认
+33. Codex 超长标题卡片
 
 | 尺寸 | 导航 | Console | 溢出 | 安全区 |
 |---|---|---|---|---|
-| 360×800 | 底部 | 单栏、固定 composer | 页面无横向溢出 | 顶部/底部 |
+| 360×800 | 底部 | 单栏、无 composer | 页面无横向溢出 | 顶部/底部 |
 | 390×844 | 底部 | 单栏 | 页面无横向溢出 | 顶部/底部 |
 | 412×915 | 底部 | 单栏 | 页面无横向溢出 | 顶部/底部 |
 | 430×932 | 底部 | 单栏 | 页面无横向溢出 | 顶部/底部 |
-| 768×1024 | 侧栏 | 时间线 + 动作双栏 | Diff/code 自身滚动 | 顶部/底部 |
+| 768×1024 | 侧栏 | 会话摘要 + 动作双栏 | Diff/code 自身滚动 | 顶部/底部 |
 
 ## 离线与审批
 
 - [x] Console 不被全屏连接页阻塞；旧消息保留。
+- [x] Console 不提供发送入口；发送、interrupt、完整时间线与 Composer 只属于完整会话页。
 - [x] 离线输入会 debounce 保存草稿，不形成发送 outbox，不自动重放。
 - [x] 在线恢复后必须由用户再次点击发送。
 - [x] Approval 只渲染 `choices`，断线/提交中不可重复提交。
@@ -95,6 +106,12 @@
 - [x] Android 持久化主题、草稿、会话和节点；HTML 不承担持久化。
 - [x] 原生页面处理敏感手动配置；WebView 只发 `node.manualSetup.open`。
 - [x] Android 把后台/网络/同步状态转换成契约中的 view model。
-- [ ] Android 对 `external.open` 做 URL allowlist 与原生确认。
+- [x] Android 对 `external.open` 做固定 HTTPS 域名 allowlist、二次防御校验与原生确认。
 
 运行 `npm run build && npm run check` 后，自动扫描项必须全部通过。
+
+## v0.0.3 PC 配对验收
+
+- [x] `moyu -init` 保存配置并启动后台网关后，自动创建一次性配对会话并打印 relay、`XXXXXXXX:PORT` 和五分钟有效期。
+- [x] 配对 overlay 启动失败或网关不可达时以非零状态结束，不报告可用配对串。
+- [x] `moyu -pair` 保留为显式重新生成入口；配对串不包含长期 bearer token 或正式网络密钥。
