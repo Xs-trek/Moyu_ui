@@ -17,7 +17,7 @@ pre, code { font-family: var(--font-mono); }
 img, svg { max-width: 100%; }
 .skip-link { position: fixed; z-index: 100; top: 8px; left: 8px; padding: 10px; background: var(--yellow); border: var(--border); transform: translateY(-150%); }
 .skip-link:focus { transform: none; }
-:focus-visible { outline: 4px solid var(--purple); outline-offset: 3px; }
+:focus-visible { outline: 4px solid var(--focus-ring); outline-offset: 3px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
 .mono { font-family: var(--font-mono); }

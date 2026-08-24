@@ -3,6 +3,7 @@ package com.moyu.remote;
 import android.content.Context;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -76,9 +77,19 @@ public final class AppCoordinatorBackNavigationTest {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (System.nanoTime() < deadline) {
                 JSONObject envelope = envelopes.poll(100, TimeUnit.MILLISECONDS);
-                if (envelope == null || !"view.full".equals(envelope.optString("type"))) continue;
-                JSONObject view = envelope.optJSONObject("view");
-                if (view != null && expected.equals(view.optString("route"))) return envelope;
+                if (envelope == null) continue;
+                if ("view.full".equals(envelope.optString("type"))) {
+                    JSONObject view = envelope.optJSONObject("view");
+                    if (view != null && expected.equals(view.optString("route"))) return envelope;
+                } else if ("view.patch".equals(envelope.optString("type"))) {
+                    JSONArray patch = envelope.optJSONArray("patch");
+                    if (patch == null) continue;
+                    for (int index = 0; index < patch.length(); index++) {
+                        JSONObject operation = patch.optJSONObject(index);
+                        if (operation != null && "/route".equals(operation.optString("path"))
+                                && expected.equals(operation.optString("value"))) return envelope;
+                    }
+                }
             }
             return null;
         }

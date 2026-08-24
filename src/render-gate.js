@@ -18,7 +18,10 @@ export function createRenderGate(renderNow, options = {}) {
   let pendingChange = { source: 'local' };
 
   function blocked(state, change) {
-    if (pointerInteraction || editingControl || composingText || textSelection || isChoiceMenuOpen()) return true;
+    /* Focused controls are safe because the renderer preserves their live DOM
+     * node and value. Blocking every host update for the whole focus lifetime
+     * made taps after editing and long-running streams appear frozen. */
+    if (pointerInteraction || composingText || textSelection || isChoiceMenuOpen()) return true;
     /* Stable surfaces own the viewport while open. Intent results and other
      * local app-state changes must not rebuild the page underneath them either;
      * only an explicit interaction-surface update may render immediately. */
@@ -27,13 +30,17 @@ export function createRenderGate(renderNow, options = {}) {
 
   function request(state, change = { source: 'local' }) {
     pendingState = state;
-    pendingChange = change;
     if (blocked(state, change)) {
+      const paths = renderQueued && pendingChange?.source === 'host' && change?.source === 'host'
+        ? [...new Set([...(pendingChange.paths || []), ...(change.paths || [])])]
+        : (change.paths || []);
+      pendingChange = { ...change, paths };
       renderQueued = true;
       return false;
     }
+    pendingChange = change;
     renderQueued = false;
-    renderNow(state);
+    renderNow(state, change);
     return true;
   }
 
@@ -42,7 +49,7 @@ export function createRenderGate(renderNow, options = {}) {
     const state = latestState() || pendingState;
     if (blocked(state, pendingChange)) return false;
     renderQueued = false;
-    renderNow(state);
+    renderNow(state, pendingChange);
     return true;
   }
 

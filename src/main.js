@@ -10,14 +10,19 @@ let editReleaseTimer = 0;
 let selectionReleaseTimer = 0;
 let activeSelectionScope = null;
 let clampingSelection = false;
+let pointerMaySelectText = false;
 
 function syncSystemTheme() {
   const view = getState().view;
-  if (view?.appearance?.theme === 'system') document.documentElement.dataset.theme = media.matches ? 'dark' : 'light';
+  const resolved = view?.appearance?.theme === 'system'
+    ? (media.matches ? 'dark' : 'light')
+    : view?.appearance?.resolvedTheme || document.documentElement.dataset.theme || 'light';
+  document.documentElement.dataset.theme = resolved;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#0C0E12' : '#F4F0E6');
 }
 
-function renderCurrent(state = getState()) {
-  render(state);
+function renderCurrent(state = getState(), change) {
+  render(state, change);
   syncSystemTheme();
 }
 
@@ -42,18 +47,25 @@ function flushQueuedRender() {
   renderGate.flush();
 }
 
-function beginPointerInteraction() {
+function beginPointerInteraction(event) {
   window.clearTimeout(releaseTimer);
-  renderGate.setPointerInteraction(true);
+  pointerMaySelectText = Boolean(scopeForNode(event.target));
+  renderGate.setPointerInteraction(pointerMaySelectText);
 }
 
 function endPointerInteraction() {
   window.clearTimeout(releaseTimer);
+  if (!pointerMaySelectText) {
+    renderGate.setPointerInteraction(false);
+    flushQueuedRender();
+    return;
+  }
   /* Android selection handles can appear after pointerup/contextmenu. Give the
    * selectionchange event time to acquire the render lease before flushing. */
   releaseTimer = window.setTimeout(() => {
     syncSelectionLease();
     renderGate.setPointerInteraction(false);
+    pointerMaySelectText = false;
     flushQueuedRender();
   }, 180);
 }
@@ -73,7 +85,7 @@ document.addEventListener('focusout', () => {
   editReleaseTimer = window.setTimeout(() => {
     renderGate.setEditingControl(isEditableControl(document.activeElement));
     flushQueuedRender();
-  }, 160);
+  }, 0);
 }, true);
 
 function hasTextSelection() {

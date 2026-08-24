@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -36,6 +37,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -53,7 +55,9 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
     private WebView webView;
     private AppCoordinator coordinator;
     private Object backInvokedCallback;
-    private final LatestOnlySlot<String> viewDispatchSlot = new LatestOnlySlot<>();
+    private String appearanceTheme = "system";
+    private String resolvedAppearance;
+    private final ViewDispatchQueue<String> viewDispatchQueue = new ViewDispatchQueue<>(32);
     private boolean backEvaluationInFlight;
     private final BroadcastReceiver overlayReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -171,35 +175,97 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
     @Override public void dispatch(JSONObject envelope) {
         final String script = "window.dispatchEvent(new CustomEvent('moyu:view',{detail:JSON.parse(" + JSONObject.quote(envelope.toString()) + ")}));";
         final boolean isFullView = "view.full".equals(envelope.optString("type"));
+        final boolean isViewState = isFullView || "view.patch".equals(envelope.optString("type"));
         runOnUiThread(() -> {
             if (webView == null) return;
-            if (!isFullView) {
+            applyAppearanceFromEnvelope(envelope);
+            if (!isViewState) {
                 webView.evaluateJavascript(script, null);
                 return;
             }
-            String next = viewDispatchSlot.offer(script);
-            if (next != null) evaluateFullView(next);
+            String next = viewDispatchQueue.offer(script, isFullView);
+            if (viewDispatchQueue.consumeRecoveryRequest() && coordinator != null) coordinator.requestFullView();
+            if (next != null) evaluateViewState(next);
         });
     }
 
-    private void evaluateFullView(String script) {
+    private void applyAppearanceFromEnvelope(JSONObject envelope) {
+        if ("view.full".equals(envelope.optString("type"))) {
+            JSONObject appearance = envelope.optJSONObject("view") == null
+                    ? null : envelope.optJSONObject("view").optJSONObject("appearance");
+            if (appearance != null) updateAppearance(appearance.optString("theme", null), appearance.optString("resolvedTheme", null));
+            return;
+        }
+        if (!"view.patch".equals(envelope.optString("type"))) return;
+        JSONArray patch = envelope.optJSONArray("patch");
+        if (patch == null) return;
+        String nextTheme = null;
+        String nextResolved = null;
+        for (int index = 0; index < patch.length(); index++) {
+            JSONObject operation = patch.optJSONObject(index);
+            if (operation == null || !"set".equals(operation.optString("op"))) continue;
+            String path = operation.optString("path");
+            if ("/appearance".equals(path)) {
+                JSONObject appearance = operation.optJSONObject("value");
+                if (appearance != null) {
+                    nextTheme = appearance.optString("theme", nextTheme);
+                    nextResolved = appearance.optString("resolvedTheme", nextResolved);
+                }
+            } else if ("/appearance/theme".equals(path)) nextTheme = operation.optString("value", nextTheme);
+            else if ("/appearance/resolvedTheme".equals(path)) nextResolved = operation.optString("value", nextResolved);
+        }
+        updateAppearance(nextTheme, nextResolved);
+    }
+
+    private void updateAppearance(String nextTheme, String nextResolved) {
+        if (nextTheme != null && !nextTheme.isEmpty()) appearanceTheme = nextTheme;
+        if (nextResolved != null && !nextResolved.isEmpty()) resolvedAppearance = nextResolved;
+        if (resolvedAppearance != null) applySystemChrome("dark".equals(resolvedAppearance));
+    }
+
+    private void applySystemChrome(boolean dark) {
+        int color = Color.parseColor(dark ? "#0C0E12" : "#F4F0E6");
+        getWindow().setStatusBarColor(color);
+        getWindow().setNavigationBarColor(color);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) getWindow().setNavigationBarDividerColor(color);
+        int visibility = getWindow().getDecorView().getSystemUiVisibility();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            visibility = dark ? visibility & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : visibility | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            visibility = dark ? visibility & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : visibility | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        }
+        getWindow().getDecorView().setSystemUiVisibility(visibility);
+        if (webView != null) webView.setBackgroundColor(color);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (!"system".equals(appearanceTheme)) return;
+        boolean dark = (configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        resolvedAppearance = dark ? "dark" : "light";
+        applySystemChrome(dark);
+        if (coordinator != null) coordinator.requestFullView();
+    }
+
+    private void evaluateViewState(String script) {
         WebView active = webView;
         if (active == null) {
-            viewDispatchSlot.clear();
+            viewDispatchQueue.clear();
             return;
         }
         try {
             active.evaluateJavascript(script, ignored -> {
                 if (active != webView) {
-                    viewDispatchSlot.clear();
+                    viewDispatchQueue.clear();
                     return;
                 }
-                String next = viewDispatchSlot.complete();
-                if (next != null) evaluateFullView(next);
+                String next = viewDispatchQueue.complete();
+                if (next != null) evaluateViewState(next);
             });
         } catch (RuntimeException unavailable) {
-            String next = viewDispatchSlot.complete();
-            if (next != null) evaluateFullView(next);
+            String next = viewDispatchQueue.complete();
+            if (next != null) evaluateViewState(next);
         }
     }
 
@@ -208,12 +274,14 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
     }
 
     private void manualSetupDialog(MoyuDatabase.NodeRecord existing) {
-        final int ink = isNightMode() ? Color.rgb(247, 244, 234) : Color.rgb(17, 17, 17);
-        final int surface = isNightMode() ? Color.rgb(28, 28, 28) : Color.rgb(255, 253, 245);
+        final boolean dark = isNightMode();
+        final int ink = dark ? Color.rgb(232, 230, 223) : Color.rgb(17, 17, 17);
+        final int surface = dark ? Color.rgb(20, 23, 28) : Color.rgb(255, 253, 245);
+        final int outline = dark ? Color.rgb(89, 98, 112) : Color.rgb(17, 17, 17);
         ScrollView scroll = new ScrollView(this);
         LinearLayout form = new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(dp(18), dp(12), dp(18), dp(18)); form.setBackgroundColor(surface);
         scroll.addView(form);
-        TextView errorBanner = new TextView(this); errorBanner.setVisibility(View.GONE); errorBanner.setTextColor(Color.rgb(17,17,17)); errorBanner.setTypeface(Typeface.DEFAULT_BOLD); errorBanner.setPadding(dp(10),dp(8),dp(10),dp(8)); errorBanner.setBackground(neoBackground(Color.rgb(255,113,168),Color.rgb(17,17,17),3)); form.addView(errorBanner);
+        TextView errorBanner = new TextView(this); errorBanner.setVisibility(View.GONE); errorBanner.setTextColor(ink); errorBanner.setTypeface(Typeface.DEFAULT_BOLD); errorBanner.setPadding(dp(10),dp(8),dp(10),dp(8)); errorBanner.setBackground(neoBackground(dark ? Color.rgb(74,32,36) : Color.rgb(255,113,168),dark ? Color.rgb(239,119,119) : outline,3)); form.addView(errorBanner);
         EditText name = field(form, "节点名称", existing == null ? "我的电脑" : existing.displayName, false);
         EditText relay = field(form, "中继节点，例如 tcp://host:11010", existing == null ? "" : existing.relayNode, false);
         EditText network = field(form, "EasyTier 网络名", existing == null ? "" : existing.networkName, false);
@@ -223,12 +291,13 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
         EditText socks = field(form, "本机 SOCKS5 端口", String.valueOf(existing == null ? 1080 : existing.socksPort), false); socks.setInputType(InputType.TYPE_CLASS_NUMBER);
         EditText token = field(form, existing == null ? "后端 Bearer token" : "Bearer token（留空则保留）", "", true);
         EditText secret = field(form, existing == null ? "EasyTier network secret" : "Network secret（留空则保留）", "", true);
-        TextView title = new TextView(this); title.setText(existing == null ? "手工配置节点" : "编辑节点"); title.setTextColor(Color.rgb(17,17,17)); title.setTextSize(22); title.setTypeface(Typeface.DEFAULT_BOLD); title.setPadding(dp(18),dp(16),dp(18),dp(12)); title.setBackground(neoBackground(Color.rgb(255,218,77),Color.rgb(17,17,17),3));
-        AlertDialog dialog = new AlertDialog.Builder(this).setCustomTitle(title)
+        TextView title = new TextView(this); title.setText(existing == null ? "手工配置节点" : "编辑节点"); title.setTextColor(ink); title.setTextSize(22); title.setTypeface(Typeface.DEFAULT_BOLD); title.setPadding(dp(18),dp(16),dp(18),dp(12)); title.setBackground(neoBackground(dark ? Color.rgb(58,50,24) : Color.rgb(255,218,77),dark ? Color.rgb(232,189,71) : outline,3));
+        AlertDialog dialog = new AlertDialog.Builder(this, dark ? AlertDialog.THEME_DEVICE_DEFAULT_DARK : AlertDialog.THEME_DEVICE_DEFAULT_LIGHT).setCustomTitle(title)
                 .setView(scroll).setNegativeButton("取消", null).setPositiveButton("保存", null).create();
         dialog.setOnShowListener(ignored -> {
             Button save = dialog.getButton(AlertDialog.BUTTON_POSITIVE); Button cancel = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-            styleDialogButton(save, Color.rgb(88,232,205)); styleDialogButton(cancel, surface); cancel.setTextColor(ink);
+            styleDialogButton(save, dark ? Color.rgb(21,54,58) : Color.rgb(88,232,205), dark ? Color.rgb(92,203,208) : outline, ink);
+            styleDialogButton(cancel, surface, outline, ink);
             save.setOnClickListener(v -> {
               try {
                 int gatewayPort = Integer.parseInt(port.getText().toString().trim());
@@ -246,16 +315,17 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
     }
 
     private EditText field(LinearLayout parent, String hint, String value, boolean secret) {
-        int ink = isNightMode() ? Color.rgb(247,244,234) : Color.rgb(17,17,17); int elevated = isNightMode() ? Color.rgb(38,38,38) : Color.WHITE;
+        int ink = isNightMode() ? Color.rgb(232,230,223) : Color.rgb(17,17,17); int elevated = isNightMode() ? Color.rgb(27,32,39) : Color.WHITE;
+        int outline = isNightMode() ? Color.rgb(89,98,112) : Color.rgb(17,17,17);
         TextView label = new TextView(this); label.setText(hint); label.setTextColor(ink); label.setTypeface(Typeface.DEFAULT_BOLD); label.setPadding(0, dp(12), 0, dp(5)); parent.addView(label);
-        EditText input = new EditText(this); input.setSingleLine(true); input.setText(value); input.setHint(hint); input.setTextColor(ink); input.setHintTextColor(isNightMode()?Color.rgb(187,181,167):Color.rgb(96,93,85)); input.setPadding(dp(11),dp(8),dp(11),dp(8)); input.setBackground(neoBackground(elevated,ink,2));
+        EditText input = new EditText(this); input.setSingleLine(true); input.setText(value); input.setHint(hint); input.setTextColor(ink); input.setHintTextColor(isNightMode()?Color.rgb(159,163,170):Color.rgb(96,93,85)); input.setPadding(dp(11),dp(8),dp(11),dp(8)); input.setBackground(neoBackground(elevated,outline,2));
         if (secret) input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(50)); parent.addView(input,params); return input;
     }
 
-    private boolean isNightMode(){return (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES;}
+    private boolean isNightMode(){return resolvedAppearance == null ? (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES : "dark".equals(resolvedAppearance);}
     private GradientDrawable neoBackground(int fill,int stroke,int width){GradientDrawable bg=new GradientDrawable();bg.setColor(fill);bg.setCornerRadius(dp(4));bg.setStroke(dp(width),stroke);return bg;}
-    private void styleDialogButton(Button button,int fill){button.setAllCaps(false);button.setTextColor(Color.rgb(17,17,17));button.setTypeface(Typeface.DEFAULT_BOLD);button.setMinHeight(dp(44));button.setBackground(neoBackground(fill,Color.rgb(17,17,17),2));LinearLayout.LayoutParams p=(LinearLayout.LayoutParams)button.getLayoutParams();p.setMargins(dp(5),dp(5),dp(5),dp(8));button.setLayoutParams(p);}
+    private void styleDialogButton(Button button,int fill,int stroke,int text){button.setAllCaps(false);button.setTextColor(text);button.setTypeface(Typeface.DEFAULT_BOLD);button.setMinHeight(dp(44));button.setBackground(neoBackground(fill,stroke,2));LinearLayout.LayoutParams p=(LinearLayout.LayoutParams)button.getLayoutParams();p.setMargins(dp(5),dp(5),dp(5),dp(8));button.setLayoutParams(p);}
 
     @Override public void openExternal(String url) {
         runOnUiThread(() -> {
@@ -266,17 +336,19 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
             }
             Uri uri = Uri.parse(allowed);
             String hostName = uri.getHost() == null ? "外部网站" : uri.getHost();
-            AlertDialog dialog = new AlertDialog.Builder(this)
+            final boolean dark = isNightMode();
+            AlertDialog dialog = new AlertDialog.Builder(this, dark ? AlertDialog.THEME_DEVICE_DEFAULT_DARK : AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                     .setTitle("离开 Moyu？")
                     .setMessage("即将在系统浏览器中打开 " + hostName + "。\n\n" + allowed)
                     .setNegativeButton("取消", null)
                     .setPositiveButton("继续打开", (ignored, which) -> launchAllowedExternal(allowed))
                     .create();
             dialog.setOnShowListener(ignored -> {
-                int surface = isNightMode() ? Color.rgb(38,38,38) : Color.rgb(255,253,245);
-                styleDialogButton(dialog.getButton(AlertDialog.BUTTON_POSITIVE), Color.rgb(88,232,205));
-                styleDialogButton(dialog.getButton(AlertDialog.BUTTON_NEGATIVE), surface);
-                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(isNightMode() ? Color.rgb(247,244,234) : Color.rgb(17,17,17));
+                int ink = dark ? Color.rgb(232,230,223) : Color.rgb(17,17,17);
+                int surface = dark ? Color.rgb(27,32,39) : Color.rgb(255,253,245);
+                int outline = dark ? Color.rgb(89,98,112) : Color.rgb(17,17,17);
+                styleDialogButton(dialog.getButton(AlertDialog.BUTTON_POSITIVE), dark ? Color.rgb(21,54,58) : Color.rgb(88,232,205), dark ? Color.rgb(92,203,208) : outline, ink);
+                styleDialogButton(dialog.getButton(AlertDialog.BUTTON_NEGATIVE), surface, outline, ink);
             });
             dialog.show();
         });
@@ -425,7 +497,7 @@ public final class MainActivity extends Activity implements AppCoordinator.Host 
         coordinator = null;
         if (active != null) active.close();
         backEvaluationInFlight = false;
-        viewDispatchSlot.clear();
+        viewDispatchQueue.clear();
         if (webView != null) { webView.removeJavascriptInterface("MoyuHost"); webView.destroy(); webView = null; }
         super.onDestroy();
     }

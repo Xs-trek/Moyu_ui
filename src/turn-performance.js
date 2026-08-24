@@ -15,17 +15,17 @@ export function formatObservedDuration(value) {
   return `${minutes}m ${String(totalSeconds % 60).padStart(2, '0')}s`;
 }
 
-/** End-to-end observed throughput, not a provider-native generation benchmark. The denominator
- * includes backend queueing, CLI startup, provider latency, tools and approvals because those
- * boundaries are the only cross-adapter timings available without provider instrumentation. */
 export function turnPerformanceLabels(performance, usage) {
   const milliseconds = finiteNonNegative(performance?.observedDurationMs);
+  const firstOutputMilliseconds = finiteNonNegative(performance?.timeToFirstOutputMs);
+  const outputMilliseconds = finiteNonNegative(performance?.outputDurationMs);
   const outputTokens = finiteNonNegative(usage?.outputTokens);
-  const tokensPerSecond = milliseconds != null && milliseconds > 0 && outputTokens != null && outputTokens > 0
-    ? outputTokens * 1_000 / milliseconds
-    : null;
+  const reportedSpeed = finiteNonNegative(performance?.outputTokensPerSecond);
+  const tokensPerSecond = reportedSpeed ?? (outputMilliseconds != null && outputMilliseconds > 0
+    && outputTokens != null && outputTokens > 0 ? outputTokens * 1_000 / outputMilliseconds : null);
   return {
     duration: formatObservedDuration(milliseconds),
+    firstOutput: formatObservedDuration(firstOutputMilliseconds),
     speed: tokensPerSecond == null ? null : `${tokensPerSecond.toFixed(1)} t/s`,
   };
 }

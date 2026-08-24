@@ -1,22 +1,46 @@
 html[data-theme="light"] { color-scheme: light; }
-html[data-theme="dark"] { color-scheme: dark; --bg: #111111; --surface: #1c1c1c; --elevated: #262626; --ink: #f7f4ea; --muted: #bbb5a7; --shadow: #69645b; --on-accent: #111111; }
-html[data-theme="dark"] .accent-yellow, html[data-theme="dark"] .accent-cyan, html[data-theme="dark"] .accent-pink, html[data-theme="dark"] .accent-purple, html[data-theme="dark"] .accent-lime, html[data-theme="dark"] .accent-danger,
-html[data-theme="dark"] .btn-primary, html[data-theme="dark"] .btn-cyan, html[data-theme="dark"] .btn-danger,
-html[data-theme="dark"] .banner, html[data-theme="dark"] .approval-card, html[data-theme="dark"] .usage-item,
-html[data-theme="dark"] .app-header, html[data-theme="dark"] .timeline-item[data-role="user"],
-html[data-theme="dark"] .tool-head, html[data-theme="dark"] .empty-icon, html[data-theme="dark"] .platform-mark,
-html[data-theme="dark"] .nav-item[aria-current="page"], html[data-theme="dark"] .fixture-panel,
-html[data-theme="dark"] .conversation-header, html[data-theme="dark"] .segment-divider,
-html[data-theme="dark"] .segment-number, html[data-theme="dark"] .outline-heading,
-html[data-theme="dark"] .outline-tabs button[aria-selected="true"], html[data-theme="dark"] .outline-item.active,
-html[data-theme="dark"] .sidebar-session-item.active, html[data-theme="dark"] .focus-header,
-html[data-theme="dark"] .choice-trigger[aria-expanded="true"], html[data-theme="dark"] .choice-option[aria-selected="true"],
-html[data-theme="dark"] .choice-option:active:not(:disabled), html[data-theme="dark"] .segmented button[aria-pressed="true"],
-html[data-theme="dark"] .slash-option.active, html[data-theme="dark"] .slash-option:focus-visible,
-html[data-theme="dark"] .setting-value-button, html[data-theme="dark"] .error-item,
-html[data-theme="dark"] .diff-status-staged, html[data-theme="dark"] .diff-status-unstaged,
-html[data-theme="dark"] .diff-status-untracked { color: var(--on-accent); }
-html[data-theme="dark"] .conversation-header .muted { color: var(--on-accent); opacity: .72; }
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0e12; --surface: #14171c; --elevated: #1b2027;
+  --ink: #e8e6df; --muted: #9fa3aa; --outline: #3b424d; --outline-strong: #596270; --shadow: #050608;
+  --yellow: #3a3218; --cyan: #15363a; --pink: #402434; --purple: #2e2948; --lime: #273718; --danger: #4a2024; --info: #1b3049;
+  --yellow-emissive: #e8bd47; --cyan-emissive: #5ccbd0; --pink-emissive: #e77ca9; --purple-emissive: #a594ec; --lime-emissive: #a6d862; --danger-emissive: #ef7777; --info-emissive: #6fa9e9;
+  --on-accent: #e8e6df; --on-emissive: #0c0e12; --focus-ring: var(--cyan-emissive);
+  --focus-glow: rgb(92 203 208 / .18); --status-glow: rgb(165 148 236 / .2);
+}
+html[data-theme="dark"] :focus-visible { box-shadow: 0 0 0 4px var(--focus-glow), 0 0 16px var(--focus-glow); }
+html[data-theme="dark"] .app-header,
+html[data-theme="dark"] .conversation-header,
+html[data-theme="dark"] .focus-header,
+html[data-theme="dark"] .outline-heading { border-bottom-color: var(--yellow-emissive); }
+html[data-theme="dark"] .timeline-item[data-role="user"],
+html[data-theme="dark"] .nav-item[aria-current="page"],
+html[data-theme="dark"] .outline-item.active,
+html[data-theme="dark"] .sidebar-session-item.active { border-color: var(--cyan-emissive); }
+html[data-theme="dark"] .approval-card { border-color: var(--pink-emissive); }
+html[data-theme="dark"] .timeline-item.message-card.streaming { border-color: var(--purple-emissive); box-shadow: var(--shadow-sm), 0 0 14px var(--status-glow); }
+html[data-theme="dark"] .status-dot { box-shadow: 0 0 9px var(--status-glow); }
+html[data-theme="dark"] .toast { box-shadow: 5px 5px 0 var(--shadow), 0 0 14px var(--status-glow); }
+html[data-theme="dark"] .provider-glyph { background: var(--pink-emissive); color: var(--on-emissive); }
+html[data-theme="dark"] .provider-tone-cyan .provider-glyph { background: var(--cyan-emissive); }
+html[data-theme="dark"] .provider-tone-lime .provider-glyph { background: var(--lime-emissive); }
+html[data-theme="dark"] .provider-tone-purple .provider-glyph { background: var(--purple-emissive); }
+html[data-theme="dark"] .platform-mark,
+html[data-theme="dark"] .segment-number,
+html[data-theme="dark"] .outline-index,
+html[data-theme="dark"] .diff-status-staged,
+html[data-theme="dark"] .diff-status-unstaged,
+html[data-theme="dark"] .diff-status-untracked { color: var(--on-emissive); }
+html[data-theme="dark"] .platform-mark { background: var(--purple-emissive); }
+html[data-theme="dark"] .segment-number { background: var(--pink-emissive); }
+html[data-theme="dark"] .outline-index { background: var(--purple-emissive); }
+html[data-theme="dark"] .diff-status-staged { background: var(--lime-emissive); }
+html[data-theme="dark"] .diff-status-unstaged { background: var(--yellow-emissive); }
+html[data-theme="dark"] .diff-status-untracked { background: var(--cyan-emissive); }
+html[data-theme="dark"] .account-group { border-top-color: var(--purple-emissive); }
+html[data-theme="dark"] .account-group.adapter-tone-cyan { border-top-color: var(--cyan-emissive); }
+html[data-theme="dark"] .account-group.adapter-tone-lime { border-top-color: var(--lime-emissive); }
+html[data-theme="dark"] .account-group.adapter-tone-pink { border-top-color: var(--pink-emissive); }
 html[data-theme="dark"] .app-header .header-theme,
 html[data-theme="dark"] .app-header .badge,
 html[data-theme="dark"] .conversation-header .btn-quiet,

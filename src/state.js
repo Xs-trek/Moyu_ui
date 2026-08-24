@@ -34,11 +34,14 @@ export function update(mutator, change = {}) {
   const next = { ...state };
   mutator(next);
   state = next;
-  const detail = { source: change.source || 'local', scope: change.scope || 'app', delivery: change.delivery || 'normal' };
+  const detail = {
+    source: change.source || 'local', scope: change.scope || 'app', delivery: change.delivery || 'normal',
+    paths: Array.isArray(change.paths) ? change.paths : []
+  };
   listeners.forEach((listener) => listener(state, detail));
 }
 
-export function replaceView(view, revision, delivery = 'normal') {
+export function replaceView(view, revision, delivery = 'normal', paths = []) {
   update((next) => {
     next.view = view;
     next.revision = revision;
@@ -51,7 +54,7 @@ export function replaceView(view, revision, delivery = 'normal') {
       if (!approval || approval.approvalId !== approvalId || !['pending', 'submitting'].includes(approval.state)) next.submitting.delete(key);
     });
     if (next.modal?.type !== 'pair') next.pairDraft = { ...next.pairDraft, ...(view.pairDraft || {}) };
-  }, { source: 'host', delivery });
+  }, { source: 'host', delivery, paths });
 }
 
 function decodePointerPart(value) {
@@ -86,6 +89,10 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function cloneContainer(value) {
+  return Array.isArray(value) ? value.slice() : { ...value };
+}
+
 function arrayIndex(part, length, allowAppend) {
   if (allowAppend && part === '-') return length;
   if (!arrayIndexPattern.test(part)) return -1;
@@ -98,7 +105,10 @@ export function applyViewPatch(patch, revision) {
   if (!state.view || !Array.isArray(patch) || patch.length > 256
     || !Number.isSafeInteger(revision) || revision !== state.revision + 1) return false;
   try {
-    const root = cloneJson(state.view);
+    /* Copy only containers touched by the patch. Patch values are still deeply
+     * validated and cloned, while the untouched view remains structurally shared. */
+    const root = cloneContainer(state.view);
+    const writable = new WeakSet([root]);
     for (const operation of patch) {
       const operationPrototype = operation && typeof operation === 'object' ? Object.getPrototypeOf(operation) : null;
       if (!operation || typeof operation !== 'object' || Array.isArray(operation)
@@ -118,10 +128,26 @@ export function applyViewPatch(patch, revision) {
         if (Array.isArray(cursor)) {
           const index = arrayIndex(part, cursor.length, false);
           if (index < 0) return false;
-          cursor = cursor[index];
+          const child = cursor[index];
+          if (child === null || typeof child !== 'object') return false;
+          if (writable.has(child)) cursor = child;
+          else {
+            const copy = cloneContainer(child);
+            writable.add(copy);
+            cursor[index] = copy;
+            cursor = copy;
+          }
         } else {
           if (!hasOwn(cursor, part)) return false;
-          cursor = cursor[part];
+          const child = cursor[part];
+          if (child === null || typeof child !== 'object') return false;
+          if (writable.has(child)) cursor = child;
+          else {
+            const copy = cloneContainer(child);
+            writable.add(copy);
+            cursor[part] = copy;
+            cursor = copy;
+          }
         }
       }
       if (cursor === null || typeof cursor !== 'object') return false;
@@ -144,7 +170,7 @@ export function applyViewPatch(patch, revision) {
         cursor[key] = cloneJson(operation.value);
       }
     }
-    replaceView(root, revision);
+    replaceView(root, revision, 'normal', patch.map((operation) => operation.path));
     return true;
   } catch {
     return false;

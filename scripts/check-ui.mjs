@@ -21,6 +21,22 @@ function check(condition, label, detail = '') {
   (condition ? passes : failures).push(`${condition ? '✓' : '✗'} ${label}${detail ? ` · ${detail}` : ''}`);
 }
 
+function cssToken(rule, name) {
+  return rule.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, 'i'))?.[1]?.toLowerCase() || '';
+}
+
+function luminance(hex) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return NaN;
+  const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
+    .map((value) => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+  return .2126 * channels[0] + .7152 * channels[1] + .0722 * channels[2];
+}
+
+function contrast(first, second) {
+  const [light, dark] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (light + .05) / (dark + .05);
+}
+
 const rootPath = decodeURIComponent(root.pathname).replace(/^\/([A-Za-z]:)/, '$1');
 const srcFiles = (await filesUnder(join(rootPath, 'src'))).filter((file) => /\.(?:js|css)$/.test(file));
 const source = (await Promise.all(srcFiles.map(async (file) => `\n/* ${relative(rootPath, file)} */\n${await readFile(file, 'utf8')}`))).join('');
@@ -28,6 +44,7 @@ const index = await readFile(join(rootPath, 'index.html'), 'utf8');
 const preview = await readFile(join(rootPath, 'preview.html'), 'utf8');
 const renderSource = await readFile(join(rootPath, 'src', 'render.js'), 'utf8');
 const mainSource = await readFile(join(rootPath, 'src', 'main.js'), 'utf8');
+const themesSource = await readFile(join(rootPath, 'src', 'styles', 'themes.css'), 'utf8');
 const stateSource = await readFile(join(rootPath, 'src', 'state.js'), 'utf8');
 const viteSource = await readFile(join(rootPath, 'vite.config.js'), 'utf8');
 const androidBuildSource = await readFile(join(rootPath, 'android', 'app', 'build.gradle'), 'utf8');
@@ -57,7 +74,8 @@ const openCodeSvg = await readFile(join(rootPath, 'public', 'assets', 'brands', 
 const notificationPng = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'res', 'drawable-xxxhdpi', 'ic_notification.png'));
 const viewEmissionPolicySource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'ViewEmissionPolicy.java'), 'utf8');
 const viewEmissionThrottleSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'ViewEmissionThrottle.java'), 'utf8');
-const latestOnlySlotSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'LatestOnlySlot.java'), 'utf8');
+const viewDispatchQueueSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'ViewDispatchQueue.java'), 'utf8');
+const jsonViewDiffSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'JsonViewDiff.java'), 'utf8');
 
 const forbiddenNetwork = ['fe' + 'tch\\s*\\(', 'XML' + 'HttpRequest', 'Web' + 'Socket', 'Event' + 'Source'];
 const forbiddenStorage = ['local' + 'Storage', 'session' + 'Storage', 'Indexed' + 'DB'];
@@ -130,13 +148,10 @@ check(boundedToastBehavior && dismissToastBehavior && toastState.getState().noti
   && source.includes('.toast-warning') && source.includes('.toast-error'),
   'Toast 最多三条、兼容字符串调用、分级、自动移除且可逐条关闭');
 check(!renderSource.includes("h('select'") && renderSource.includes('choice-menu'), '正式 UI 选择项不触发原生 select');
-check(['划', '摸', '摆', '爽', '寄', '困', '饿', '累', '麻'].every((glyph) => renderSource.includes(`'${glyph}'`))
-  && renderSource.includes('const brandGlyph = chooseBrandGlyph();')
-  && renderSource.includes('globalThis.crypto.getRandomValues(value)')
-  && renderSource.includes('text: brandGlyph')
-  && renderSource.includes('node.pairDraft.save'), '品牌字每次 HTML 载入随机且本次稳定');
-check(renderSource.includes("'./assets/brands/moyu.svg'") && brandSvg.includes('Moyu dead fish')
-  && !/(?:https?:)?\/\//i.test(brandSvg.replace('http://www.w3.org/2000/svg', '')), '应用内品牌使用本地死鱼 SVG');
+check(!renderSource.includes('brandGlyph') && !renderSource.includes("'./assets/brands/moyu.svg'")
+  && renderSource.includes("class: 'header-route-title'"), 'WebView 页头不显示 Moyu 品牌块');
+check(brandSvg.includes('Moyu dead fish')
+  && !/(?:https?:)?\/\//i.test(brandSvg.replace('http://www.w3.org/2000/svg', '')), '随包品牌资产保持本地且不影响 Android 图标');
 check(notificationPng.subarray(1, 4).toString() === 'PNG' && notificationPng[25] === 6, '通知图标是带 alpha 通道的 PNG mask');
 check(!renderSource.includes('.replaceChildren('), '正式 UI 兼容 Android 11 内置 WebView');
 check(source.includes('min-height: 100vh; min-height: 100dvh') && source.includes('right: 0; bottom: 0; left: 0;') && !source.includes('inset:'), 'CSS 兼容 Android 11 WebView 布局属性');
@@ -145,15 +160,15 @@ check(renderSource.includes("class: 'muted composer-status'")
   && source.includes('.composer-actions .composer-status { order: -1; flex: 1 0 100%;')
   && source.includes('.composer-actions .btn { flex: 0 0 auto; white-space: nowrap; }'),
   '360–430px composer 状态与操作按钮不会被挤成竖排');
-const performanceFixture = turnPerformanceLabels({ observedDurationMs: 14_600 }, { outputTokens: 906 });
+const performanceFixture = turnPerformanceLabels({ observedDurationMs: 14_600, timeToFirstOutputMs: 1_280, outputDurationMs: 12_120 }, { outputTokens: 906 });
 const unavailablePerformance = turnPerformanceLabels(undefined, { outputTokens: 906 });
 const invalidPerformance = turnPerformanceLabels({ observedDurationMs: null }, { outputTokens: '906' });
 const zeroDurationPerformance = turnPerformanceLabels({ observedDurationMs: 0 }, { outputTokens: 906 });
-check(performanceFixture.duration === '14.6 s' && performanceFixture.speed === '62.1 t/s'
+check(performanceFixture.duration === '14.6 s' && performanceFixture.firstOutput === '1.3 s' && performanceFixture.speed === '74.8 t/s'
   && unavailablePerformance.duration === null && unavailablePerformance.speed === null
   && invalidPerformance.duration === null && invalidPerformance.speed === null
   && zeroDurationPerformance.duration === '0 ms' && zeroDurationPerformance.speed === null
-  && coordinatorSource.includes('observedDurationMs'), '回复显示端到端耗时与输出均速且历史缺值不伪造');
+  && coordinatorSource.includes('timeToFirstOutputMs') && coordinatorSource.includes('outputTokensPerSecond'), '回复显示总耗时、首字与输出阶段速度且历史缺值不伪造');
 
 const csp = "default-src 'self'; connect-src 'none'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none';";
 check(index.includes(csp) && preview.includes(csp), '正式与预览入口均包含严格 CSP');
@@ -230,11 +245,18 @@ check(renderSource.includes("dataset: { form: 'approval-questions'")
   && coordinatorSource.includes('approvalDecision(p,storedApproval==null?null:storedApproval.optJSONArray("choices"))')
   && coordinatorSource.includes('optJSONObject("allowWithModification")')
   && contractSource.includes('allowWithModification: { answers: Record<string, string | string[]> }'), 'AskUserQuestion 结构化回答与 ExitPlanMode 原生确认契约闭环');
-check(source.includes('item.costUsd') && source.includes('turn.costUsd')
-  && source.includes('缓存读') && source.includes('缓存写') && source.includes('费用'), '回复卡片显示四类 token 与 Host 提供的费用');
+check(renderSource.includes("replyMetric('模型'") && renderSource.includes("replyMetric('深度'")
+  && renderSource.includes("replyMetric('入/出'") && renderSource.includes("replyMetric('缓存'")
+  && renderSource.includes("replyMetric('推理'") && renderSource.includes("replyMetric('速度'")
+  && renderSource.includes("replyMetric('首字'") && renderSource.includes("replyMetric('总耗'")
+  && source.includes('grid-template-columns: minmax(0, 1.45fr) repeat(3, minmax(0, 1fr))')
+  && !renderSource.includes('费用'), '回复卡片固定两行显示八项事实信息且不显示费用');
 check(renderSource.includes('document.startViewTransition(commit)') && renderSource.includes('routeChanged')
   && source.includes('::view-transition-old(root)') && source.includes('@media (prefers-reduced-motion: reduce)')
   && source.includes('.page-enter') && !/\.page\s*\{[^}]*animation:/s.test(source), '页面切换使用可降级 View Transition，Host 高频更新不触发入场动画');
+check(renderSource.includes('identity === renderedModalIdentity') && renderSource.includes('reconcileChildren(currentDialog')
+  && renderSource.includes('animateFallbackRoute()') && source.includes('view-transition-name: route-content')
+  && !source.includes('steps(2) infinite'), '同类弹窗原位更新，路由过渡独立于 Host 重绘且运行状态不再离散闪烁');
 check(renderSource.includes('收起系统记录') && renderSource.includes('展开过程') && renderSource.includes('展开工具详情')
   && renderSource.includes('展开审批详情') && !renderSource.includes("class: 'segment-divider'"), '正文常显，系统/思考/已完成工具/已处理审批默认折叠且主时间线不重复分段黄框');
 const { captureScrollAnchor, restoreScrollAnchor } = await import(new URL('../src/scroll-anchor.js', import.meta.url));
@@ -251,7 +273,7 @@ check(renderSource.includes("local.scrollHeight > local.clientHeight")
   && renderSource.includes("state.route === 'conversation' && renderedRoute === 'conversation'")
   && renderSource.includes('restoreScrollAnchor(conversationScroller(), scrollAnchor)')
   && replacedHistoryScroller.scrollTop === 500
-  && replacedLiveScroller.scrollTop === 1200, '连续 view.full 保留历史阅读位置，近底流式输出自动跟随');
+  && replacedLiveScroller.scrollTop === 1200, '连续 Host 视图更新保留历史阅读位置，近底流式输出自动跟随');
 const { createRenderGate } = await import(new URL('../src/render-gate.js', import.meta.url));
 const gatedRevisions = [];
 let choiceMenuOpen = false;
@@ -266,7 +288,7 @@ choiceMenuOpen = false;
 const flushedLatestAfterClose = renderGate.flush();
 check(stayedQueuedWhileOpen && flushedLatestAfterClose && gatedRevisions.length === 1 && gatedRevisions[0] === 2
   && source.includes("new Event('moyu:choice-menu-change')")
-  && source.includes("document.querySelector('.choice-menu:not([hidden])')"), '下拉菜单打开期间合并 Host 更新，关闭后仅渲染最新 view.full');
+  && source.includes("document.querySelector('.choice-menu:not([hidden])')"), '下拉菜单打开期间合并 Host 更新，关闭后仅渲染最新视图状态');
 const stableRenders = [];
 let latestGateState = { revision: 10 };
 let stableSurfaceOpen = true;
@@ -306,11 +328,16 @@ check(renderSource.includes('export function handleUiBack()')
 check(viewEmissionPolicySource.includes('"text.delta"') && viewEmissionPolicySource.includes('"tool.output"')
   && viewEmissionThrottleSource.includes('executor.schedule') && coordinatorSource.includes('VIEW_EMIT_DELAY_MS = 100L')
   && coordinatorSource.includes('if(ViewEmissionPolicy.shouldThrottle(type))viewEmitter.request()')
-  && latestOnlySlotSource.includes('pending = value') && mainActivitySource.includes('viewDispatchSlot.offer(script)')
-  && databaseSource.includes('body.optBoolean("streaming", false)'), 'Android 流式视图限频、WebView 单槽背压与流式摘要冻结闭环');
-check(source.includes('editingControl') && source.includes("document.querySelector('#composer-input')?.blur()") && coordinatorSource.includes('"session.saveDraft".equals(type)') && !/"pong"\.equals\(type\)[^\n]*emitView/.test(coordinatorSource), '输入法激活期间 Host 更新不会重建输入控件');
-check(coordinatorSource.includes('Integer messageAfter=0') && coordinatorSource.includes('syncOne(opened); subscribe(opened);')
-  && coordinatorSource.includes('deleteLegacySyntheticSystemMessages') && databaseSource.includes('text.startsWith("[approval:")'), '打开会话从规范消息游标零修复时间线并清理旧审批/错误 system 副本');
+  && jsonViewDiffSource.includes('"view.patch"') === false && coordinatorSource.includes('JsonViewDiff.between')
+  && viewDispatchQueueSource.includes('ArrayDeque') && viewDispatchQueueSource.includes('recoveryRequested')
+  && mainActivitySource.includes('viewDispatchQueue.offer(script, isFullView)')
+  && databaseSource.includes('body.optBoolean("streaming", false)'), 'Android 流式限频、增量 patch、有序有界 WebView 背压与流式摘要冻结闭环');
+check(renderSource.includes('reconcileChildren(app') && renderSource.includes("document.activeElement !== current")
+  && mainSource.includes('pointerMaySelectText') && coordinatorSource.includes('"session.saveDraft".equals(type)')
+  && !/"pong"\.equals\(type\)[^\n]*emitView/.test(coordinatorSource), '焦点控件稳定复用且普通点按不再等待文本选择租约');
+check(coordinatorSource.includes('Integer messageAfter = 0') && coordinatorSource.includes('subscribe(opened);')
+  && coordinatorSource.includes('refreshLiveSessionAsync(opened, promotingNativeHistory)') && coordinatorSource.includes('networkWorker.execute')
+  && coordinatorSource.includes('deleteLegacySyntheticSystemMessages') && databaseSource.includes('text.startsWith("[approval:")'), '打开会话本地先显、后台从规范消息游标零对账并清理旧审批/错误 system 副本');
 check(databaseSource.includes('db.update("sessions"') && !/insertWithOnConflict\("sessions"[^\n]*CONFLICT_REPLACE/.test(databaseSource), '保存会话不会触发 timeline 外键级联删除');
 check(databaseSource.includes('putCanonicalUserTimeline')
   && databaseSource.includes('WHERE session_id=? AND substr(item_key,1,11)=? ORDER BY local_seq ASC')
@@ -382,13 +409,31 @@ check(backendClientSource.includes('buildWebSocketRequest(apiBase, token)')
   && backendClientSource.includes('header("Authorization", "Bearer " + token)')
   && !backendClientSource.includes('/ws?token='), 'WebSocket 长期凭据只放 Authorization header，不进入 URL');
 check(source.includes('prefers-color-scheme') && source.includes('prefers-reduced-motion'), '主题与低动画模式完整');
-check(source.includes('html[data-theme="dark"] .conversation-header')
-  && source.includes('html[data-theme="dark"] .segment-divider')
-  && source.includes('html[data-theme="dark"] .choice-option[aria-selected="true"]')
-  && source.includes('html[data-theme="dark"] .setting-value-button')
-  && source.includes('html[data-theme="dark"] .conversation-header .btn-quiet')
-  && source.includes('html[data-theme="dark"] .fixture-panel select'),
-  '夜间高饱和色块统一使用高对比深色前景');
+const darkThemeRule = themesSource.match(/html\[data-theme="dark"\]\s*\{([^}]+)\}/s)?.[1] || '';
+const darkBackgrounds = ['bg', 'surface', 'elevated'].map((name) => cssToken(darkThemeRule, name));
+const darkContainers = ['yellow', 'cyan', 'pink', 'purple', 'lime', 'danger', 'info'].map((name) => cssToken(darkThemeRule, name));
+const darkEmissive = ['yellow-emissive', 'cyan-emissive', 'pink-emissive', 'purple-emissive', 'lime-emissive', 'danger-emissive', 'info-emissive'].map((name) => cssToken(darkThemeRule, name));
+const darkInk = cssToken(darkThemeRule, 'ink');
+const darkMuted = cssToken(darkThemeRule, 'muted');
+const darkOnEmissive = cssToken(darkThemeRule, 'on-emissive');
+check(darkBackgrounds.every(Boolean) && darkContainers.every(Boolean)
+  && luminance(darkBackgrounds[0]) < luminance(darkBackgrounds[1])
+  && luminance(darkBackgrounds[1]) < luminance(darkBackgrounds[2])
+  && Math.max(...darkContainers.map(luminance)) < .08
+  && darkContainers.every((color) => contrast(color, darkInk) >= 7)
+  && contrast(darkBackgrounds[0], darkInk) >= 7
+  && contrast(darkBackgrounds[0], darkMuted) >= 4.5,
+  '夜间表面分层、大面积色块亮度预算及正文对比度合格');
+check(darkEmissive.every(Boolean) && darkEmissive.every((color) => contrast(color, darkOnEmissive) >= 4.5)
+  && themesSource.includes('.timeline-item.message-card.streaming')
+  && themesSource.includes('.status-dot { box-shadow: 0 0 9px var(--status-glow); }')
+  && !themesSource.includes('html[data-theme="dark"] .accent-yellow,'),
+  '夜间高亮色与局部光晕仅用于小面积身份、焦点和运行状态');
+check(mainSource.includes('meta[name="theme-color"]') && mainSource.includes("resolved === 'dark' ? '#0C0E12' : '#F4F0E6'")
+  && mainActivitySource.includes('applyAppearanceFromEnvelope(envelope)')
+  && mainActivitySource.includes('applySystemChrome("dark".equals(resolvedAppearance))')
+  && mainActivitySource.includes('onConfigurationChanged(Configuration configuration)'),
+  'WebView、状态栏、导航栏及手动/系统主题保持一致');
 check(source.includes('Profile（创建后冻结）') && source.includes('本次会话能力') && source.includes('supportedModels'), '新建会话按 capabilities 渲染');
 const outlineFixture = conversationSegments([
   { localSeq: 1, kind: 'message', role: 'system', text: 'restored' },

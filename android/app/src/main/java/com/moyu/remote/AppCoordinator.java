@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -46,6 +47,7 @@ public final class AppCoordinator implements AutoCloseable {
     private final ArtifactCache artifacts;
     private final Host host;
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    private final ExecutorService networkWorker = Executors.newFixedThreadPool(2);
     private final Map<String, Integer> historyLimits = new HashMap<>();
     private final Map<String, LiveStream> textStreams = new HashMap<>();
     private final Map<String, LiveStream> thinkingStreams = new HashMap<>();
@@ -80,6 +82,8 @@ public final class AppCoordinator implements AutoCloseable {
     private ScheduledFuture<?> pingTask;
     private int reconnectAttempt;
     private JSONObject serverView, accountsView, configView, netView, transportView;
+    private JSONObject lastEmittedView;
+    private boolean forceFullView = true;
 
     private boolean pairing;
     private String pairCode, pairRelay, pairDisplayName;
@@ -105,6 +109,16 @@ public final class AppCoordinator implements AutoCloseable {
     public void postIntent(String raw) {
         if (raw == null || raw.getBytes(StandardCharsets.UTF_8).length > MAX_INTENT_BYTES) return;
         worker.execute(() -> handleRawIntent(raw));
+    }
+
+    /** Called by the WebView delivery queue when bounded patch backpressure needs a new base snapshot. */
+    public void requestFullView() {
+        if (closed) return;
+        worker.execute(() -> {
+            if (closed) return;
+            forceFullView = true;
+            emitView();
+        });
     }
 
     /** Serializes Android system-back navigation with all other native route changes. */
@@ -230,7 +244,7 @@ public final class AppCoordinator implements AutoCloseable {
                 }
                 uiReady = true;
                 return null;
-            case "view.reload": return null;
+            case "view.reload": forceFullView = true; return null;
             case "appearance.set":
                 String nextTheme = required(p, "theme");
                 if (!nextTheme.matches("system|light|dark")) throw new UiFailure("bad_intent", "未知主题", false);
@@ -245,8 +259,20 @@ public final class AppCoordinator implements AutoCloseable {
                 route = "conversation";
                 db.putSetting("route", route);
                 if (online && activeNodeId != null && activeNodeId.equals(opened.nodeId)) {
-                    if (opened.remoteSessionId != null) { if(opened.resumeRef!=null&&opened.nativeCachedSeq>0)completeNativePromotion(opened);else syncOne(opened); subscribe(opened); }
-                    else if (opened.resumeRef != null && AdapterCapabilityPolicy.supportsHistory(serverView, opened.kind, "messages")) syncNativeMessages(opened, true);
+                    if (opened.remoteSessionId != null) {
+                        boolean promotingNativeHistory = opened.resumeRef != null && opened.nativeCachedSeq > 0;
+                        if (promotingNativeHistory) subscribeAfter(opened.remoteSessionId, 0);
+                        else subscribe(opened);
+                        refreshLiveSessionAsync(opened, promotingNativeHistory);
+                    } else if (opened.resumeRef != null && AdapterCapabilityPolicy.supportsHistory(serverView, opened.kind, "messages")) {
+                        if (opened.nativeMessageCount < opened.nativeCachedSeq) {
+                            db.deleteTimeline(opened.localSessionId);
+                            opened.nativeCachedSeq = 0;
+                            opened.lastSeq = 0;
+                            db.saveSession(opened);
+                        }
+                        refreshNativeSessionAsync(opened);
+                    }
                 }
                 return null;
             case "session.create": return createSession(p);
@@ -568,6 +594,118 @@ public final class AppCoordinator implements AutoCloseable {
         return false;
     }
 
+    /** Local history is rendered before these REST reconciliation calls run. Network I/O never
+     * occupies the state actor; fetched pages are applied serially back on {@link #worker}. */
+    private void refreshLiveSessionAsync(MoyuDatabase.SessionRecord opened, boolean promotingNativeHistory) {
+        BackendClient client = backend;
+        String localId = opened.localSessionId;
+        String remoteId = opened.remoteSessionId;
+        int initialAfter = promotingNativeHistory ? 0 : opened.lastSeq;
+        if (client == null || remoteId == null) return;
+        db.deleteLegacySyntheticSystemMessages(localId);
+        networkWorker.execute(() -> {
+            ArrayList<JSONObject> pages = new ArrayList<>();
+            try {
+                int after = initialAfter;
+                Integer messageAfter = 0;
+                for (int page = 0; page < 24; page++) {
+                    String cursor = messageAfter == null ? "" : "&messageAfter=" + messageAfter;
+                    JSONObject response = client.getObject("/sessions/" + path(remoteId) + "/sync?after=" + after + cursor + "&limit=256");
+                    pages.add(response);
+                    after = response.optInt("nextAfterSeq", after);
+                    messageAfter = response.optInt("nextMessageAfterSeq", messageAfter == null ? after : messageAfter);
+                    if (!response.optBoolean("hasMoreEvents", false) && !response.optBoolean("hasMoreMessages", false)) break;
+                }
+                worker.execute(() -> applyLiveSessionPages(client, localId, pages, promotingNativeHistory));
+            } catch (Exception ignored) {
+                /* WebSocket replay remains authoritative; a failed additive reconciliation must
+                 * not turn an already-open local conversation into an error screen. */
+            }
+        });
+    }
+
+    private void applyLiveSessionPages(BackendClient client, String localId, List<JSONObject> pages, boolean promotingNativeHistory) {
+        if (closed || backend != client) return;
+        try {
+            MoyuDatabase.SessionRecord session = db.getSession(localId);
+            if (session == null || session.remoteSessionId == null) return;
+            for (JSONObject response : pages) {
+                JSONArray messages = response.optJSONArray("messages");
+                if (messages != null) for (int index = 0; index < messages.length(); index++) persistCanonicalMessage(session, messages.optJSONObject(index));
+                JSONArray events = response.optJSONArray("events");
+                if (events != null) for (int index = 0; index < events.length(); index++) processEventEnvelope(events.optJSONObject(index), false);
+                JSONObject summary = response.optJSONObject("session");
+                if (summary != null) {
+                    String requested = nullable(summary, "requestedModel");
+                    session.model = requested != null ? requested : nullable(summary, "model");
+                    session.effort = nullable(summary, "effort");
+                    session.permissionMode = nullable(summary, "permissionMode");
+                    String resumeRef = AdapterCapabilityPolicy.resumeRef(summary);
+                    if (resumeRef != null) session.resumeRef = resumeRef;
+                    session.state = mapTurnState(summary.optString("turnState", session.state));
+                    session.updatedAt = summary.optString("updatedAt", session.updatedAt);
+                }
+                session.lastSeq = Math.max(session.lastSeq, response.optInt("nextAfterSeq", session.lastSeq));
+                db.saveSession(session);
+            }
+            if (promotingNativeHistory && !pages.isEmpty()) {
+                JSONObject last = pages.get(pages.size() - 1);
+                boolean complete = !last.optBoolean("hasMoreEvents", false) && !last.optBoolean("hasMoreMessages", false);
+                if (complete && session.resumeRef != null) {
+                    int truncatedBeforeSeq = 0;
+                    for (JSONObject response : pages) truncatedBeforeSeq = Math.max(truncatedBeforeSeq, response.optInt("messagesTruncatedBeforeSeq", 0));
+                    String prefix = NativeHistoryKeys.prefix(session.localSessionId, session.kind, session.resumeRef);
+                    if (NativeHistoryRetention.backendContainsFullHistory(truncatedBeforeSeq)) db.deleteTimelinePrefix(session.localSessionId, prefix);
+                    else db.deleteTimelinePrefixAfterRemoteSeq(session.localSessionId, prefix, truncatedBeforeSeq);
+                    session.nativeCachedSeq = 0;
+                    db.saveSession(session);
+                }
+            }
+            if (localId.equals(activeSessionId)) emitView();
+        } catch (Exception ignored) { }
+    }
+
+    private void refreshNativeSessionAsync(MoyuDatabase.SessionRecord opened) {
+        BackendClient client = backend;
+        String localId = opened.localSessionId;
+        String kind = opened.kind;
+        String resumeRef = opened.resumeRef;
+        int initialAfter = opened.nativeCachedSeq;
+        if (client == null || resumeRef == null) return;
+        networkWorker.execute(() -> {
+            ArrayList<JSONObject> pages = new ArrayList<>();
+            try {
+                int after = initialAfter;
+                for (int page = 0; page < 50; page++) {
+                    JSONObject response = client.getObject("/history/" + path(kind) + "/" + path(resumeRef) + "/messages?after=" + after + "&limit=100");
+                    pages.add(response);
+                    int next = response.optInt("nextAfter", after);
+                    if (next <= after && response.optBoolean("hasMore", false)) break;
+                    after = next;
+                    if (!response.optBoolean("hasMore", false)) break;
+                }
+                worker.execute(() -> applyNativeSessionPages(client, localId, pages));
+            } catch (Exception ignored) { }
+        });
+    }
+
+    private void applyNativeSessionPages(BackendClient client, String localId, List<JSONObject> pages) {
+        if (closed || backend != client) return;
+        try {
+            MoyuDatabase.SessionRecord session = db.getSession(localId);
+            if (session == null || session.remoteSessionId != null) return;
+            for (JSONObject response : pages) {
+                JSONArray messages = response.optJSONArray("items");
+                if (messages != null) for (int index = 0; index < messages.length(); index++) persistNativeMessage(session, messages.optJSONObject(index));
+                session.nativeCachedSeq = Math.max(session.nativeCachedSeq, response.optInt("nextAfter", session.nativeCachedSeq));
+                session.nativeMessageCount = Math.max(session.nativeMessageCount, response.optInt("latestSeq", session.nativeMessageCount));
+                session.lastSeq = session.nativeCachedSeq;
+                db.saveSession(session);
+            }
+            if (localId.equals(activeSessionId)) emitView();
+        } catch (Exception ignored) { }
+    }
+
     private void persistCanonicalMessage(MoyuDatabase.SessionRecord session, JSONObject message) throws Exception {
         persistCanonicalMessage(session,message,message==null?0:message.optInt("seq"));
     }
@@ -622,7 +760,7 @@ public final class AppCoordinator implements AutoCloseable {
         else if("tool.done".equals(type)){String id=event.optString("toolCallId");String key="tool:"+remoteId+":"+id;JSONObject item=toolItems.remove(session.localSessionId+":"+id);if(item==null)item=db.timelineItem(key);if(item==null)item=new JSONObject().put("kind","tool").put("toolCallId",id).put("tool","tool").put("createdAt",now);item.put("state",event.optBoolean("isError")?"error":"done");db.putTimeline(session.localSessionId,key,seq,item);}
         else if("approval.request".equals(type)){db.deleteTimelineItem("m:"+remoteId+":"+seq);JSONObject approval=new JSONObject().put("approvalId",event.optString("approvalId")).put("kind",event.optString("kind","permission")).put("summary",event.optString("summary","需要审批")).put("choices",event.optJSONArray("choices")==null?new JSONArray():event.optJSONArray("choices")).put("state","pending");if(event.has("tool"))approval.put("tool",event.opt("tool"));if(event.has("input"))approval.put("input",event.opt("input"));db.putTimeline(session.localSessionId,"approval:"+remoteId+":"+event.optString("approvalId"),seq,new JSONObject().put("kind","approval").put("approval",approval).put("createdAt",now));}
         else if("approval.resolved".equals(type)){String id=event.optString("approvalId");String key="approval:"+remoteId+":"+id;JSONObject existing=db.timelineItem(key);JSONObject approval=existing==null?null:existing.optJSONObject("approval");if(approval==null)approval=new JSONObject().put("approvalId",id).put("kind","permission").put("summary","审批已处理");String decision=event.optString("decision");approval.put("choices",new JSONArray()).put("state",("deny".equals(decision)||"cancel".equals(decision))?"denied":"allowed");db.putTimeline(session.localSessionId,key,seq,new JSONObject().put("kind","approval").put("approval",approval).put("createdAt",existing==null?now:existing.optString("createdAt",now)));}
-        else if("turn.completed".equals(type)){session.state="completed";String runtimeModel=event.optString("model","").trim();String runtimeEffort=event.optString("effort","").trim();if(!runtimeEffort.isEmpty())session.effort=runtimeEffort;JSONObject meta=new JSONObject().put("kind","usage").put("usage",event.optJSONObject("usage")==null?new JSONObject():event.optJSONObject("usage")).put("createdAt",now);if(!runtimeModel.isEmpty())meta.put("model",runtimeModel);if(!runtimeEffort.isEmpty())meta.put("effort",runtimeEffort);JSONObject performance=event.optJSONObject("performance");if(performance!=null){long observedDurationMs=performance.optLong("observedDurationMs",-1);if(observedDurationMs>=0)meta.put("performance",new JSONObject().put("observedDurationMs",observedDurationMs));}db.putTimeline(session.localSessionId,"usage:"+remoteId+":"+seq,seq,meta);}
+        else if("turn.completed".equals(type)){session.state="completed";String runtimeModel=event.optString("model","").trim();String runtimeEffort=event.optString("effort","").trim();if(!runtimeEffort.isEmpty())session.effort=runtimeEffort;JSONObject meta=new JSONObject().put("kind","usage").put("usage",event.optJSONObject("usage")==null?new JSONObject():event.optJSONObject("usage")).put("createdAt",now);if(!runtimeModel.isEmpty())meta.put("model",runtimeModel);if(!runtimeEffort.isEmpty())meta.put("effort",runtimeEffort);JSONObject performance=event.optJSONObject("performance");if(performance!=null){JSONObject safePerformance=new JSONObject();copyNonNegativeNumber(performance,safePerformance,"observedDurationMs");copyNonNegativeNumber(performance,safePerformance,"timeToFirstOutputMs");copyNonNegativeNumber(performance,safePerformance,"outputDurationMs");copyNonNegativeNumber(performance,safePerformance,"outputTokensPerSecond");if(safePerformance.length()>0)meta.put("performance",safePerformance);}db.putTimeline(session.localSessionId,"usage:"+remoteId+":"+seq,seq,meta);}
         else if("turn.failed".equals(type)){session.state="failed";String fallbackMode=nullable(event,"permissionMode");if(fallbackMode!=null)session.permissionMode=fallbackMode;db.deleteTimelineItem("m:"+remoteId+":"+seq);db.putTimeline(session.localSessionId,"error:"+remoteId+":"+seq,seq,new JSONObject().put("kind","error").put("error",uiError(event.optString("category","unknown"),event.optString("summary","CLI 执行失败"),false)).put("createdAt",now));}
         else if("transport.metrics".equals(type)){transportView=event.optJSONObject("metrics");}
         session.lastSeq=Math.max(session.lastSeq,seq);if(ViewEmissionPolicy.updatesSessionTimestamp(type))session.updatedAt=now;db.saveSession(session);
@@ -631,6 +769,7 @@ public final class AppCoordinator implements AutoCloseable {
 
     private void ack(int seq){try{if(backend!=null)backend.send(new JSONObject().put("type","ack").put("seq",seq));}catch(Exception ignored){}}
     private void subscribe(MoyuDatabase.SessionRecord s){try{backend.send(new JSONObject().put("type","subscribe").put("sessionId",s.remoteSessionId).put("afterSeq",s.lastSeq));}catch(Exception ignored){}}
+    private void subscribeAfter(String remoteSessionId,int afterSeq){try{backend.send(new JSONObject().put("type","subscribe").put("sessionId",remoteSessionId).put("afterSeq",afterSeq));}catch(Exception ignored){}}
 
     private JSONObject createSession(JSONObject p) throws Exception {
         requireOnline(); String nodeId=required(p,"nodeId");if(!nodeId.equals(activeNodeId))throw new UiFailure("wrong_node","请先连接所选节点",true);
@@ -867,7 +1006,38 @@ public final class AppCoordinator implements AutoCloseable {
 
     private void emitView(){if(closed||!uiReady)return;viewEmitter.emitNow();}
 
-    private void emitViewNow(){if(closed||!uiReady)return;try{JSONObject view=new JSONObject().put("route",route).put("now",Instant.now().toString()).put("appearance",new JSONObject().put("theme",theme).put("resolvedTheme",resolvedTheme())).put("pairDraft",pairDraftJson());if(activeNodeId!=null)view.put("activeNodeId",activeNodeId);if(activeSessionId!=null)view.put("activeLocalSessionId",activeSessionId);view.put("connection",connectionJson());JSONArray nodes=new JSONArray();for(MoyuDatabase.NodeRecord n:db.listNodes())nodes.put(nodeJson(n));view.put("nodes",nodes);JSONArray sessions=new JSONArray();for(MoyuDatabase.SessionRecord s:db.listSessions())sessions.put(sessionJson(s));view.put("sessions",sessions);MoyuDatabase.SessionRecord active=activeSessionId==null?null:db.getSession(activeSessionId);if(active!=null)view.put("activeSession",sessionDetail(active));if(serverView!=null)view.put("server",serverView);if(accountsView!=null)view.put("accounts",accountsView);if(configView!=null)view.put("config",configView);view.put("diagnostics",diagnosticsJson()).put("ui",new JSONObject().put("pendingRequestIds",new JSONArray()));JSONObject envelope=new JSONObject().put("version",1).put("type","view.full").put("revision",++revision).put("view",view);host.dispatch(envelope);}catch(Exception ignored){}}
+    private void emitViewNow() {
+        if (closed || !uiReady) return;
+        try {
+            JSONObject view = new JSONObject().put("route", route).put("now", Instant.now().toString())
+                    .put("appearance", new JSONObject().put("theme", theme).put("resolvedTheme", resolvedTheme()))
+                    .put("pairDraft", pairDraftJson());
+            if (activeNodeId != null) view.put("activeNodeId", activeNodeId);
+            if (activeSessionId != null) view.put("activeLocalSessionId", activeSessionId);
+            view.put("connection", connectionJson());
+            JSONArray nodes = new JSONArray();
+            for (MoyuDatabase.NodeRecord node : db.listNodes()) nodes.put(nodeJson(node));
+            view.put("nodes", nodes);
+            JSONArray sessions = new JSONArray();
+            for (MoyuDatabase.SessionRecord session : db.listSessions()) sessions.put(sessionJson(session));
+            view.put("sessions", sessions);
+            MoyuDatabase.SessionRecord active = activeSessionId == null ? null : db.getSession(activeSessionId);
+            if (active != null) view.put("activeSession", sessionDetail(active));
+            if (serverView != null) view.put("server", new JSONObject(serverView.toString()));
+            if (accountsView != null) view.put("accounts", new JSONObject(accountsView.toString()));
+            if (configView != null) view.put("config", new JSONObject(configView.toString()));
+            view.put("diagnostics", diagnosticsJson())
+                    .put("ui", new JSONObject().put("pendingRequestIds", new JSONArray()));
+
+            JSONArray patch = forceFullView || lastEmittedView == null ? null : JsonViewDiff.between(lastEmittedView, view, 256);
+            JSONObject envelope = new JSONObject().put("version", 1).put("revision", ++revision);
+            if (patch == null) envelope.put("type", "view.full").put("view", view);
+            else envelope.put("type", "view.patch").put("patch", patch);
+            lastEmittedView = view;
+            forceFullView = false;
+            host.dispatch(envelope);
+        } catch (Exception ignored) { }
+    }
 
     private JSONObject connectionJson()throws Exception{JSONObject c=new JSONObject().put("state",connectionState).put("summary",connectionSummary);if(activeNodeId!=null)c.put("nodeId",activeNodeId);if(phoneBackendRttMs>=0)c.put("phoneBackendRttMs",phoneBackendRttMs);if(connectionErrorCode!=null)c.put("error",uiError(connectionErrorCode,connectionErrorSummary,false));return c;}
     private JSONObject nodeJson(MoyuDatabase.NodeRecord n)throws Exception{boolean active=n.nodeId.equals(activeNodeId);JSONObject out=new JSONObject().put("nodeId",n.nodeId).put("displayName",n.displayName).put("relayNode",n.relayNode).put("configured",isConfigured(n)).put("active",active).put("overlayState",active?overlayState:"idle").put("backendState",active&&online?"online":active&&"failed".equals(overlayState)?"offline":"unknown").put("syncState",active?syncState:"idle").put("peerConnected",active&&overlayPeerConnected).put("linkMode",active?overlayLinkMode:"unknown").put("lastConnectedAt",n.lastConnectedAt==null?JSONObject.NULL:n.lastConnectedAt).put("secretState",new JSONObject().put("token",secrets.has(n.nodeId,"token")).put("networkSecret",secrets.has(n.nodeId,"networkSecret")));if(active&&overlayLinkObservedAt!=null)out.put("linkObservedAt",overlayLinkObservedAt);return out;}
@@ -920,6 +1090,7 @@ public final class AppCoordinator implements AutoCloseable {
     private static String emptyToNull(String v){return v==null||v.isEmpty()?null:v;}
     private static String valueOrEmpty(String v){return v==null?"":v;}
     private static void copyNonEmpty(JSONObject from,JSONObject to,String key)throws Exception{String v=from.optString(key,"");if(!v.isEmpty())to.put(key,v);}
+    private static void copyNonNegativeNumber(JSONObject from,JSONObject to,String key)throws Exception{Object value=from.opt(key);if(value instanceof Number){double number=((Number)value).doubleValue();if(Double.isFinite(number)&&number>=0)to.put(key,value);}}
     private static String path(String v){return query(v).replace("+","%20");}
     private static String query(String v){try{return URLEncoder.encode(v==null?"":v,StandardCharsets.UTF_8.name());}catch(Exception e){return"";}}
     private static int count(JSONArray a){return a==null?0:a.length();}
@@ -931,5 +1102,5 @@ public final class AppCoordinator implements AutoCloseable {
     private static final class LiveStream{final String createdAt;final StringBuilder text=new StringBuilder();LiveStream(String createdAt){this.createdAt=createdAt;}}
     private static final class UiFailure extends Exception{final String code;final boolean retryable;UiFailure(String code,String summary,boolean retryable){super(summary);this.code=code;this.retryable=retryable;}}
 
-    @Override public void close(){closed=true;worker.execute(()->{viewEmitter.close();closeBackend();worker.shutdown();});}
+    @Override public void close(){closed=true;networkWorker.shutdownNow();worker.execute(()->{viewEmitter.close();closeBackend();worker.shutdown();});}
 }

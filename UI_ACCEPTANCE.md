@@ -24,7 +24,7 @@
 
 ## Fixture 与主题矩阵
 
-以下 33 组均需在 `light` 和 `dark` 下检查；`system` 额外验证系统切换：
+以下 35 组均需在 `light` 和 `dark` 下检查；`system` 额外验证系统切换：
 
 1. 无节点
 2. 离线本地历史
@@ -59,6 +59,8 @@
 31. Claude AskUserQuestion 结构化问题
 32. Claude ExitPlanMode 退出计划确认
 33. Codex 超长标题卡片
+34. OpenCode 共享 Server 会话
+35. 未知平台通用回退
 
 | 尺寸 | 导航 | Console | 溢出 | 安全区 |
 |---|---|---|---|---|
@@ -88,6 +90,15 @@
 - [x] `prefers-reduced-motion` 与 `prefers-contrast`。
 - [x] 状态均有文字，不只依赖颜色或图标。
 
+## 夜间视觉
+
+- [x] 夜间使用独立的 base/surface/elevated 与 outline 层级，不反转日间色板。
+- [x] 大面积状态色使用低亮度容器；日间黄/青/粉/紫/绿/红不直接铺满夜间卡片或标题栏。
+- [x] 明亮色与柔光只用于小面积品牌标记、焦点、状态点、选中边界和流式输出边界。
+- [x] 主文字对背景与所有状态容器至少 7:1，次级文字对背景至少 4.5:1；自动检查色值预算。
+- [x] 普通结构边框不复用主文字白色，硬阴影始终比表面更暗。
+- [x] 35 个 fixture 夜间直接页面遍历无日间大亮色面、主题错配或页面横向溢出；390×844 审批页另做手机画幅目视检查。
+
 ## 安全
 
 - [x] 严格 CSP 与 `connect-src 'none'`。
@@ -101,11 +112,13 @@
 
 - [x] 注入唯一 `window.MoyuHost.postMessage`。
 - [x] 在 `app.ready` 后发送首个 `view.full`。
-- [x] revision 严格单调；收到 `view.reload` 返回最新 `view.full`。
+- [x] revision 严格单调；首帧与恢复使用 `view.full`，常规更新使用有序有界 `view.patch`，收到 `view.reload` 返回最新 `view.full`。
 - [x] 所有合法 intent 返回对应 requestId 的 `intent.result`。
 - [x] Android 持久化主题、草稿、会话和节点；HTML 不承担持久化。
+- [x] 手动/系统主题切换同步 WebView、状态栏、导航栏和原生配置/确认弹层。
 - [x] 原生页面处理敏感手动配置；WebView 只发 `node.manualSetup.open`。
 - [x] Android 把后台/网络/同步状态转换成契约中的 view model。
+- [x] 打开会话先显示 SQLite 本地历史再后台对账；流式 patch 稳定复用输入框、选区、目录和时间线节点。
 - [x] Android 对 `external.open` 做固定 HTTPS 域名 allowlist、二次防御校验与原生确认。
 
 运行 `npm run build && npm run check` 后，自动扫描项必须全部通过。

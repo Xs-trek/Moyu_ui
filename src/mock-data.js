@@ -31,7 +31,7 @@ const baseMessages = [
   { localSeq: 4, kind: 'tool', toolCallId: 'tool-1', tool: 'rg', input: { pattern: 'refreshToken', path: 'src/auth' }, output: 'src/auth/session.ts:48: refreshToken\nsrc/auth/guard.ts:91: refreshToken', state: 'done', createdAt: ago(15) },
   { localSeq: 5, kind: 'message', role: 'assistant', text: '问题来自两个页面恢复事件同时进入刷新分支。当前互斥锁只包裹请求，没有覆盖响应写回，因此较旧响应会覆盖新 token。', createdAt: ago(12) },
   { localSeq: 6, kind: 'tool', toolCallId: 'tool-2', tool: 'apply_patch', input: { file: 'src/auth/session.ts', change: '将请求与写回纳入同一版本门控' }, output: 'Done!', state: 'done', createdAt: ago(9) },
-  { localSeq: 7, kind: 'usage', model: 'claude-sonnet', effort: 'high', usage: { inputTokens: 3821, outputTokens: 906, cacheReadTokens: 1400, cacheWriteTokens: 320 }, costUsd: 0.0187, performance: { observedDurationMs: 14600 }, createdAt: ago(8) },
+  { localSeq: 7, kind: 'usage', model: 'claude-sonnet', effort: 'high', usage: { inputTokens: 3821, outputTokens: 906, cacheReadTokens: 1400, cacheWriteTokens: 320, reasoningTokens: 284 }, costUsd: 0.0187, performance: { observedDurationMs: 14600, timeToFirstOutputMs: 1280, outputDurationMs: 12120, outputTokensPerSecond: 74.75 }, createdAt: ago(8) },
   { localSeq: 8, kind: 'message', role: 'assistant', text: '修复完成。我增加了单飞请求和响应版本检查，并补了页面同时恢复的回归测试。', createdAt: ago(5) }
 ];
 

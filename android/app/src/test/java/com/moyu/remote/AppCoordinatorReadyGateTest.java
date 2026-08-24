@@ -3,6 +3,7 @@ package com.moyu.remote;
 import android.content.Context;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -17,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 33)
@@ -55,6 +57,25 @@ public final class AppCoordinatorReadyGateTest {
         assertEquals(false, result.getBoolean("ok"));
         assertEquals("ui_version_incompatible", result.getJSONObject("error").getString("code"));
         assertNull(host.awaitFull(250));
+    }
+
+    @Test public void updatesUsePatchAndReloadReestablishesAFullSnapshot() throws Exception {
+        coordinator.postIntent("{\"version\":1,\"type\":\"app.ready\",\"requestId\":\"ready-patch-test\",\"payload\":{\"uiVersion\":\""+BuildConfig.VERSION_NAME+"\"}}");
+        assertNotNull(host.awaitType("view.full", 2_000));
+
+        coordinator.postIntent("{\"version\":1,\"type\":\"appearance.set\",\"requestId\":\"theme-patch-test\",\"payload\":{\"theme\":\"dark\"}}");
+        JSONObject patchEnvelope = host.awaitType("view.patch", 2_000);
+        assertNotNull(patchEnvelope);
+        JSONArray patch = patchEnvelope.getJSONArray("patch");
+        boolean changedTheme = false;
+        for (int index = 0; index < patch.length(); index++) {
+            if ("/appearance/theme".equals(patch.getJSONObject(index).optString("path"))) changedTheme = true;
+        }
+        assertTrue(changedTheme);
+
+        coordinator.postIntent("{\"version\":1,\"type\":\"view.reload\",\"requestId\":\"reload-patch-test\",\"payload\":{}}");
+        assertNotNull(host.awaitType("view.full", 2_000));
+        app.database().putSetting("theme", "system");
     }
 
     @Test public void localTestSuffixHasAnExplicitCompatibilityRule() {

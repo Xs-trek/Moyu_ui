@@ -76,9 +76,9 @@ moyu_ui/
 │  ├─ phone.html
 │  └─ assets/
 │     ├─ brands/{anthropic.svg,moyu.svg,openai.svg,opencode.svg}
-│     ├─ main-DMCp9aQw.js
-│     ├─ main-HIKpxZAc.css
-│     ├─ preview-Nbu_LQ9d.js
+│     ├─ main-BLaIIbDY.js
+│     ├─ main-IJMEagMk.css
+│     ├─ preview-bJLPseZB.js
 │     ├─ phone-DNdXNNuf.js
 │     └─ phone-BDCaU-hj.css
 └─ android/
@@ -108,8 +108,8 @@ moyu_ui/
          │  │     ├─ index.html
          │  │     └─ assets/
          │  │        ├─ brands/{anthropic.svg,moyu.svg,openai.svg,opencode.svg}
-         │  │        ├─ main-DMCp9aQw.js
-         │  │        └─ main-HIKpxZAc.css
+         │  │        ├─ main-BLaIIbDY.js
+         │  │        └─ main-IJMEagMk.css
          │  ├─ cpp/easytier_jni.c
          │  ├─ jniLibs/arm64-v8a/
          │  │  ├─ libeasytier_android_jni.so
@@ -122,7 +122,7 @@ moyu_ui/
          │  │  ├─ ControlViewMapper.java
          │  │  ├─ EasyTierLinkInfo.java
          │  │  ├─ ExternalLinkPolicy.java
-         │  │  ├─ LatestOnlySlot.java
+         │  │  ├─ JsonViewDiff.java
          │  │  ├─ MainActivity.java
          │  │  ├─ MoyuApplication.java
          │  │  ├─ MoyuDatabase.java
@@ -130,6 +130,7 @@ moyu_ui/
          │  │  ├─ NativeHistoryKeys.java
          │  │  ├─ NativeHistoryPaging.java
          │  │  ├─ NativeHistoryRetention.java
+         │  │  ├─ ViewDispatchQueue.java
          │  │  ├─ OverlayService.java
          │  │  ├─ SecretStore.java
          │  │  ├─ ViewEmissionPolicy.java
@@ -154,12 +155,13 @@ moyu_ui/
             ├─ ControlViewMapperTest.java
             ├─ EasyTierLinkInfoTest.java
             ├─ ExternalLinkPolicyTest.java
-            ├─ LatestOnlySlotTest.java
+            ├─ JsonViewDiffTest.java
             ├─ MoyuDatabaseApprovalStateTest.java
             ├─ MoyuDatabaseMergeTest.java
             ├─ MoyuDatabaseMigrationTest.java
             ├─ MoyuDatabasePreviewTest.java
             ├─ NativeHistoryIdentityTest.java
+            ├─ ViewDispatchQueueTest.java
             ├─ NativeHistoryKeysTest.java
             ├─ NativeHistoryPagingTest.java
             ├─ NativeHistoryRetentionTest.java

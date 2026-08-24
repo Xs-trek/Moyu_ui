@@ -1,6 +1,6 @@
 const NEAR_BOTTOM_PX = 96;
 
-/** Capture the reader position before a view.full render replaces the conversation DOM. */
+/** Capture the reader position before a full or structural conversation reconciliation. */
 export function captureScrollAnchor(scroller) {
   if (!scroller) return null;
   const scrollHeight = Math.max(0, Number(scroller.scrollHeight) || 0);

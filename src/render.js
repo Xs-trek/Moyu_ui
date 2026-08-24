@@ -23,20 +23,6 @@ const approvalChoices = new Set(['allow', 'allow_session', 'deny', 'cancel']);
 const overlayStateLabels = { idle: '空闲', starting: '启动中', online: '在线', offline: '离线', error: '错误', unknown: '未知' };
 const backendStateLabels = { unknown: '未知', offline: '离线', online: '在线' };
 const syncStateLabels = { idle: '空闲', syncing: '同步中', current: '已同步', error: '错误' };
-const brandGlyphs = Object.freeze(['划', '摸', '摆', '爽', '寄', '困', '饿', '累', '麻']);
-
-/* Selected once when this HTML/JS process loads. Re-renders keep the same glyph. */
-function chooseBrandGlyph() {
-  try {
-    const value = new Uint32Array(1);
-    globalThis.crypto.getRandomValues(value);
-    return brandGlyphs[value[0] % brandGlyphs.length];
-  } catch {
-    return brandGlyphs[Date.now() % brandGlyphs.length];
-  }
-}
-
-const brandGlyph = chooseBrandGlyph();
 const approvalAnswerDrafts = new Map();
 const copyValues = new WeakMap();
 
@@ -66,6 +52,65 @@ function replaceChildren(node, ...children) {
     if (child === null || child === undefined || child === false) return;
     node.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));
   });
+}
+
+function renderKey(node) {
+  if (!(node instanceof Element)) return '';
+  return node.dataset.renderKey || node.id || '';
+}
+
+function compatibleNode(current, desired) {
+  if (!current || current.nodeType !== desired.nodeType) return false;
+  if (current.nodeType === Node.TEXT_NODE) return true;
+  if (!(current instanceof Element) || !(desired instanceof Element) || current.tagName !== desired.tagName) return false;
+  const currentKey = renderKey(current);
+  const desiredKey = renderKey(desired);
+  return currentKey || desiredKey ? Boolean(currentKey && desiredKey && currentKey === desiredKey) : true;
+}
+
+function syncElement(current, desired) {
+  [...current.attributes].forEach((attribute) => {
+    if (!desired.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+  });
+  [...desired.attributes].forEach((attribute) => {
+    if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+  });
+  if ('disabled' in current) current.disabled = Boolean(desired.disabled);
+  if ('checked' in current) current.checked = Boolean(desired.checked);
+  if ('selected' in current) current.selected = Boolean(desired.selected);
+  if ('value' in current && document.activeElement !== current && current.value !== desired.value) current.value = desired.value;
+  if (copyValues.has(desired)) copyValues.set(current, copyValues.get(desired));
+}
+
+function reconcileNode(current, desired) {
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.data !== desired.data) current.data = desired.data;
+    return current;
+  }
+  syncElement(current, desired);
+  reconcileChildren(current, ...desired.childNodes);
+  return current;
+}
+
+function reconcileChildren(parent, ...desiredChildren) {
+  const desired = desiredChildren.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false)
+    .map((child) => child instanceof Node ? child : document.createTextNode(String(child)));
+  const existing = [...parent.childNodes];
+  const keyed = new Map(existing.map((child) => [renderKey(child), child]).filter(([key]) => key));
+  const used = new Set();
+  let cursor = parent.firstChild;
+  desired.forEach((next) => {
+    const key = renderKey(next);
+    let current = key ? keyed.get(key) : null;
+    if (current && (used.has(current) || !compatibleNode(current, next))) current = null;
+    if (!current && cursor && !used.has(cursor) && compatibleNode(cursor, next)) current = cursor;
+    if (!current) current = next;
+    if (current !== next) reconcileNode(current, next);
+    if (current !== cursor) parent.insertBefore(current, cursor);
+    used.add(current);
+    cursor = current.nextSibling;
+  });
+  existing.forEach((child) => { if (!used.has(child) && child.parentNode === parent) parent.removeChild(child); });
 }
 
 function button(text, action, options = {}) {
@@ -125,11 +170,13 @@ function canUseDiff(view, session) {
 }
 function sessionStateLabel(state) { return sessionStateLabels[state] || state || '未知'; }
 function isPending(state, key) { return Boolean(key && state?.submitting?.has(key)); }
-function fmtCost(value) { return Number.isFinite(value) && value >= 0 ? `$${value.toFixed(value < 0.01 ? 4 : 2)}` : null; }
-
 function fmtTokens(value) {
   const number = Number(value || 0);
   return number >= 1000000 ? `${(number / 1000000).toFixed(1)}m` : number >= 1000 ? `${(number / 1000).toFixed(1)}k` : String(number);
+}
+
+function fmtOptionalTokens(value) {
+  return Number.isFinite(value) && value >= 0 ? fmtTokens(value) : '—';
 }
 
 function fmtTime(value) {
@@ -160,10 +207,6 @@ function header(view, route = 'console') {
   const nextTheme = view?.appearance?.theme === 'light' ? 'dark' : view?.appearance?.theme === 'dark' ? 'system' : 'light';
   const currentThemeLabel = view?.appearance?.theme === 'dark' ? '夜间' : view?.appearance?.theme === 'system' ? '跟随系统' : '日间';
   return h('header', { class: 'app-header' },
-    h('div', { class: 'brand', 'aria-label': 'Moyu Remote' },
-      h('span', { class: 'brand-mark', 'aria-hidden': 'true', text: brandGlyph }),
-      h('img', { class: 'brand-icon', src: './assets/brands/moyu.svg', alt: '' }),
-      h('span', { text: 'moyu' })),
     view ? h('strong', { class: 'header-route-title', text: labels[route]?.[0] || '控制台' }) : null,
     h('div', { class: 'header-status' },
       badge(connectionLabels[connection.state] || connection.state, connection.state),
@@ -224,20 +267,18 @@ function timelineItem(item, session, state) {
     const turn = item.turnMeta || {};
     const usage = turn.usage || {};
     const performance = turnPerformanceLabels(turn.performance, usage);
-    const replyFooter = item.role === 'assistant' ? h('footer', { class: 'reply-meta', 'aria-label': '本轮模型与用量' },
-      h('span', { title: '模型', text: turn.model || session.model || 'CLI 默认模型' }),
-      h('span', { title: '推理深度', text: `深度 ${turn.effort || session.effort || '默认'}` }),
-      h('span', { title: '输入 token', text: `入 ${fmtTokens(usage.inputTokens)}` }),
-      h('span', { title: '输出 token', text: `出 ${fmtTokens(usage.outputTokens)}` }),
-      h('span', { title: '缓存读取 token', text: `缓存读 ${fmtTokens(usage.cacheReadTokens)}` }),
-      h('span', { title: '缓存写入 token', text: `缓存写 ${fmtTokens(usage.cacheWriteTokens)}` }),
-      performance.duration ? h('span', { class: 'performance-chip', title: 'PC 后端从回合开始到完成的端到端观测耗时', text: `耗时 ${performance.duration}` }) : null,
-      performance.speed ? h('span', { class: 'performance-chip', title: '回合平均输出速度；包含排队、CLI 启动、网络、工具和审批等待', text: `回合均速 ${performance.speed}` }) : null) : null;
-    const cost = fmtCost(turn.costUsd);
-    if (cost && replyFooter) replyFooter.append(h('span', { title: '本轮费用（Host 提供）', text: `费用 ${cost}` }));
+    const replyFooter = item.role === 'assistant' ? h('footer', { class: 'reply-meta', 'aria-label': '本轮模型、推理与性能' },
+      replyMetric('模型', turn.model || session.model || 'CLI 默认', '本轮运行时模型', 'reply-metric-model'),
+      replyMetric('深度', turn.effort || session.effort || '默认', '本轮原生推理深度'),
+      replyMetric('入/出', `${fmtOptionalTokens(usage.inputTokens)}/${fmtOptionalTokens(usage.outputTokens)}`, '输入 token / 输出 token'),
+      replyMetric('缓存', fmtOptionalTokens(usage.cacheReadTokens), '缓存命中（读取）token'),
+      replyMetric('推理', fmtOptionalTokens(usage.reasoningTokens), '运行时明确上报的推理 token；未上报时为横线'),
+      replyMetric('速度', performance.speed || '—', '首个可见输出到完成期间的平均输出速度'),
+      replyMetric('首字', performance.firstOutput || '—', '输入被后端接受到首个可见助手文本的耗时'),
+      replyMetric('总耗', performance.duration || '—', '输入被后端接受到回合完成的端到端耗时')) : null;
     const systemKey = `system-${item.localSeq}`;
     const systemExpanded = item.role !== 'system' || state.expandedItems.has(systemKey);
-    return h('article', { class: `timeline-item message-card ${item.streaming ? 'streaming' : ''} ${item.role === 'system' ? 'operational-item' : ''}`, dataset: { role: item.role, localSeq: item.localSeq }, 'aria-live': item.streaming ? 'polite' : undefined, 'aria-busy': item.streaming ? 'true' : undefined },
+    return h('article', { class: `timeline-item message-card ${item.streaming ? 'streaming' : ''} ${item.role === 'system' ? 'operational-item' : ''}`, dataset: { role: item.role, localSeq: item.localSeq, renderKey: `timeline-${item.localSeq}` }, 'aria-live': item.streaming ? 'polite' : undefined, 'aria-busy': item.streaming ? 'true' : undefined },
       h('div', { class: 'timeline-head' }, item.role === 'assistant' ? brandMark(session.kind) : h('span', {}, item.role === 'user' ? '你' : '系统'), h('div', { class: 'row' }, item.streaming ? h('span', { class: 'streaming-label', text: '正在回复' }) : null, time, item.text ? copyButton(item.text, '复制', { ariaLabel: '复制消息' }) : null, item.text ? focusButton(item) : null)),
       item.role === 'system' ? button(systemExpanded ? '收起系统记录' : '展开系统记录', 'toggle-output', { class: 'btn-small btn-quiet fold-toggle', data: { id: systemKey } }) : null,
       item.text && systemExpanded ? richText(item.text) : null, systemExpanded ? artifactGallery(item.artifacts) : null, replyFooter);
@@ -245,7 +286,7 @@ function timelineItem(item, session, state) {
   if (item.kind === 'thinking') {
     const key = `thinking-${item.localSeq}`;
     const expanded = item.streaming || state.expandedItems.has(key);
-    return h('article', { class: `timeline-item thinking operational-item ${item.streaming ? 'streaming' : ''}`, dataset: { localSeq: item.localSeq }, 'aria-live': item.streaming ? 'polite' : undefined },
+    return h('article', { class: `timeline-item thinking operational-item ${item.streaming ? 'streaming' : ''}`, dataset: { localSeq: item.localSeq, renderKey: `timeline-${item.localSeq}` }, 'aria-live': item.streaming ? 'polite' : undefined },
       h('div', { class: 'timeline-head' }, h('span', {}, item.streaming ? '正在思考' : '思考过程'), h('div', { class: 'row' }, time, expanded ? copyButton(item.text, '复制') : null, expanded ? focusButton(item) : null)),
       item.streaming ? null : button(expanded ? '收起过程' : '展开过程', 'toggle-output', { class: 'btn-small btn-quiet fold-toggle', data: { id: key } }),
       expanded ? h('p', { class: 'timeline-text', dataset: { selectionScope: 'thinking' }, text: item.text }) : null);
@@ -253,7 +294,7 @@ function timelineItem(item, session, state) {
   if (item.kind === 'tool') {
     const output = item.output || (item.state === 'running' ? '等待工具输出…' : '无输出');
     const expanded = item.state === 'running' || item.state === 'error' || state.expandedItems.has(`tool-${item.localSeq}`);
-    return h('article', { class: 'timeline-item tool-card', dataset: { state: item.state, localSeq: item.localSeq }, 'aria-live': item.state === 'running' ? 'polite' : undefined, 'aria-busy': item.state === 'running' ? 'true' : undefined },
+    return h('article', { class: 'timeline-item tool-card', dataset: { state: item.state, localSeq: item.localSeq, renderKey: `timeline-${item.localSeq}` }, 'aria-live': item.state === 'running' ? 'polite' : undefined, 'aria-busy': item.state === 'running' ? 'true' : undefined },
       h('div', { class: 'tool-head' }, h('strong', { text: `工具 · ${item.tool}` }), h('div', { class: 'row' }, badge(item.state === 'running' ? '运行中' : item.state === 'done' ? '已完成' : '失败', item.state), copyButton(output, '复制输出'), focusButton(item, 'output'))),
       expanded && item.input !== undefined ? h('div', { class: 'copy-block' }, h('div', { class: 'copy-block-head' }, h('small', { text: '输入' }), copyButton(safeStringify(item.input), '复制输入')), h('pre', { class: 'tool-output', dataset: { selectionScope: 'tool-input' }, text: safeStringify(item.input) })) : null,
       expanded ? h('pre', { class: 'tool-output expanded', dataset: { selectionScope: 'tool-output' }, text: output }) : null,
@@ -262,22 +303,20 @@ function timelineItem(item, session, state) {
   }
   if (item.kind === 'approval') return approvalCard(item, session);
   if (item.kind === 'usage') {
-    const cost = fmtCost(item.costUsd);
     const key = `usage-${item.localSeq}`;
     const expanded = state.expandedItems.has(key);
-    return h('article', { class: 'timeline-item usage-item operational-item', dataset: { localSeq: item.localSeq } },
+    return h('article', { class: 'timeline-item usage-item operational-item', dataset: { localSeq: item.localSeq, renderKey: `timeline-${item.localSeq}` } },
       h('div', { class: 'timeline-head' }, h('strong', {}, '本轮用量'), time),
       button(expanded ? '收起用量' : '展开用量', 'toggle-output', { class: 'btn-small btn-quiet fold-toggle', data: { id: key } }),
       expanded ? h('div', { class: 'row usage-summary' },
         h('span', { text: `输入 ${fmtTokens(item.usage?.inputTokens)}` }),
         h('span', { text: `输出 ${fmtTokens(item.usage?.outputTokens)}` }),
         h('span', { text: `缓存读 ${fmtTokens(item.usage?.cacheReadTokens)}` }),
-        h('span', { text: `缓存写 ${fmtTokens(item.usage?.cacheWriteTokens)}` }),
-        cost ? h('strong', { text: `费用 ${cost}` }) : null) : null);
+        h('span', { text: `缓存写 ${fmtTokens(item.usage?.cacheWriteTokens)}` })) : null);
   }
   if (item.kind === 'error') {
     const errorText = `${item.error.summary || '本轮失败'}\n${item.error.code || ''}`.trim();
-    return h('article', { class: 'timeline-item error-item', dataset: { localSeq: item.localSeq }, role: 'alert' },
+    return h('article', { class: 'timeline-item error-item', dataset: { localSeq: item.localSeq, renderKey: `timeline-${item.localSeq}` }, role: 'alert' },
       h('div', { class: 'timeline-head' }, h('strong', {}, '本轮失败'), h('div', { class: 'row' }, time, copyButton(errorText), focusButton(item, 'error'))), h('div', { dataset: { selectionScope: 'error' } }, h('p', { text: item.error.summary }), h('code', { text: item.error.code })));
   }
   return null;
@@ -385,7 +424,7 @@ function approvalCard(item, session) {
   const askTool = approval.kind === 'userInput' && approval.tool === 'AskUserQuestion';
   const questions = askTool ? askUserQuestions(approval) : null;
   const choices = Array.isArray(approval.choices) ? approval.choices.filter((choice) => approvalChoices.has(choice)) : [];
-  const card = h('article', { class: 'timeline-item approval-card', dataset: { state: approval.state, localSeq: item.localSeq }, 'aria-live': 'assertive' },
+  const card = h('article', { class: 'timeline-item approval-card', dataset: { state: approval.state, localSeq: item.localSeq, renderKey: `timeline-${item.localSeq}` }, 'aria-live': 'assertive' },
     h('div', { class: 'timeline-head' }, h('strong', {}, expired ? '审批已过期' : '需要你的审批'), badge(approvalStateLabels[approval.state] || approval.state, approval.state === 'pending' ? 'running' : approval.state)),
     h('h3', { text: approval.summary }),
     resolved ? button(expanded ? '收起审批详情' : '展开审批详情', 'toggle-output', { class: 'btn-small btn-quiet fold-toggle', data: { id: foldKey } }) : null,
@@ -766,6 +805,7 @@ function diffFile(file) {
 }
 
 let renderedModalSignature = '';
+let renderedModalIdentity = '';
 let modalCleanup = null;
 let modalReturnElement = null;
 function modalSignature(state) {
@@ -781,7 +821,18 @@ function renderModal(state) {
   const root = document.querySelector('#dialog-root');
   const signature = modalSignature(state);
   if (signature && signature === renderedModalSignature && root.firstChild) return;
+  const identity = state.modal ? `${state.modal.type}:${state.modal.mandatory === true}` : '';
+  const currentDialog = root.querySelector('.dialog');
+  if (identity && identity === renderedModalIdentity && currentDialog) {
+    /* Directory navigation and other same-dialog results update in place. This
+     * keeps the sheet, focus trap and scroll container stable instead of
+     * replaying the entrance animation for loading/result state changes. */
+    reconcileChildren(currentDialog, modalContent(state.modal, state));
+    renderedModalSignature = signature;
+    return;
+  }
   renderedModalSignature = signature;
+  renderedModalIdentity = identity;
   modalCleanup?.({ restoreFocus: false });
   modalCleanup = null;
   replaceChildren(root);
@@ -926,10 +977,12 @@ function modalContent(modal, state) {
   }
   if (modal.type === 'session-model') {
     const session = view.activeSession;
+    const currentModel = session?.model || '';
+    const models = [...new Set([currentModel, ...modelSuggestions(view, session?.kind)].filter(Boolean))];
     return h('form', { dataset: { form: 'session-model' } },
       h('h2', { id: 'dialog-title' }, '当前会话模型'),
       h('p', { class: 'muted' }, '只修改后续轮次的原生 CLI --model 参数，不探测服务端模型目录，也不会改写消息内容。运行中的回合不能切换。'),
-      modelInput('模型标识', 'model', session?.model || '', modelSuggestions(view, session?.kind), ''),
+      choiceField('模型', 'model', [['', 'CLI 默认模型'], ...models.map((model) => [model, modelDisplay(model)])], currentModel, 'form'),
       actions(button('取消', 'close-modal'), button(isPending(state, `model-${session?.localSessionId}`) ? '应用中…' : '应用到后续轮次', 'submit-session-model', { class: 'btn-primary', disabled: !session || session.state === 'running' || view.connection.state !== 'online' || isPending(state, `model-${session?.localSessionId}`) })));
   }
   if (modal.type === 'confirm') return h('div', {}, h('h2', { id: 'dialog-title', text: modal.title }), h('p', { text: modal.message }), modal.warning ? h('div', { class: 'banner banner-error', text: modal.warning }) : null, actions(button('返回', 'close-modal'), button(modal.confirmText || '确认', modal.action, { class: 'btn-danger', data: modal.data })));
@@ -969,6 +1022,11 @@ function modalContent(modal, state) {
 }
 
 function fieldInput(label, name, placeholder, value = '') { return h('label', { class: 'field' }, h('span', { text: label }), h('input', { name, placeholder, value })); }
+function replyMetric(label, value, title, className = '') {
+  return h('span', { class: `reply-metric ${className}`, title },
+    h('small', { class: 'reply-metric-label', text: label }),
+    h('strong', { class: 'reply-metric-value', text: value }));
+}
 function modelInput(label, name, value, suggestions = [], effectiveModel = '') {
   return h('div', { class: 'field model-input-field' },
     h('span', { class: 'field-label', text: label }),
@@ -992,7 +1050,7 @@ function choiceField(label, name, options, value, scope, settings = {}) {
   const selectedText = selected?.[1] || '暂无可选项';
   return h('div', { class: `field choice-field ${settings.class || ''}` },
     h('span', { id: `${id}-label`, class: settings.hiddenLabel ? 'sr-only' : 'field-label', text: label }),
-    scope === 'create' ? h('input', { type: 'hidden', name, value: selectedValue }) : null,
+    scope === 'create' || scope === 'form' ? h('input', { type: 'hidden', name, value: selectedValue }) : null,
     h('button', {
       type: 'button',
       class: 'choice-trigger',
@@ -1063,6 +1121,51 @@ function initialCreateDraft(view, requestedKind) {
 }
 
 let renderedRoute = '';
+let fallbackRouteAnimation = null;
+
+function animateFallbackRoute() {
+  const target = document.querySelector('.conversation-layout > .page, .main-layout > .page');
+  if (!target || reducedMotion()) return;
+  fallbackRouteAnimation?.cancel?.();
+  if (typeof target.animate !== 'function') {
+    target.classList.add('page-enter');
+    window.setTimeout(() => target.classList.remove('page-enter'), 180);
+    return;
+  }
+  const animation = target.animate([
+    { opacity: .62, transform: 'translateY(4px)' },
+    { opacity: 1, transform: 'translateY(0)' }
+  ], { duration: 160, easing: 'cubic-bezier(.2, 0, 0, 1)' });
+  fallbackRouteAnimation = animation;
+  animation.finished?.catch(() => {}).finally?.(() => {
+    if (fallbackRouteAnimation === animation) fallbackRouteAnimation = null;
+  });
+}
+
+function patchLiveConversation(state, change) {
+  if (renderedRoute !== 'conversation' || state.route !== 'conversation' || change?.source !== 'host' || !change.paths?.length) return false;
+  const indices = new Set();
+  for (const path of change.paths) {
+    const match = path.match(/^\/activeSession\/messages\/(\d+)\/(?:text|output|streaming|state)$/);
+    if (match) { indices.add(Number(match[1])); continue; }
+    if (/^\/(?:now|diagnostics(?:\/.*)?|sessions\/\d+\/(?:lastSeq|preview)|activeSession\/lastSeq)$/.test(path)) continue;
+    return false;
+  }
+  if (!indices.size) return false;
+  const session = state.view?.activeSession;
+  if (!session) return false;
+  const projected = conversationItems(session.messages);
+  for (const index of indices) {
+    const source = session.messages[index];
+    const item = source && projected.find((candidate) => candidate.localSeq === source.localSeq);
+    const current = item && document.querySelector(`[data-render-key="timeline-${CSS.escape(String(item.localSeq))}"]`);
+    const desired = item && timelineItem(item, session, state);
+    if (!current || !desired) return false;
+    reconcileNode(current, desired);
+  }
+  queueConversationChromeSync();
+  return true;
+}
 
 function conversationScroller() {
   const local = document.querySelector('.conversation-scroll');
@@ -1070,26 +1173,26 @@ function conversationScroller() {
   return document.scrollingElement || document.documentElement;
 }
 
-export function render(state) {
+export function render(state, change) {
   const app = document.querySelector('#app');
   const view = state.view;
   if (!view) {
-    replaceChildren(app, header(null), h('main', { class: 'page stack' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' })));
+    reconcileChildren(app, header(null), h('main', { class: 'page stack' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' })));
     return;
   }
   document.documentElement.dataset.theme = view.appearance.resolvedTheme;
   document.documentElement.classList.toggle('reduce-motion-fixture', view.ui?.reducedMotion === true);
+  if (patchLiveConversation(state, change)) return;
   const pages = { console: consolePage, conversation: conversationPage, sessions: sessionsPage, nodes: nodesPage, accounts: accountsPage, settings: settingsPage, diagnostics: diagnosticsPage };
   const outlineScrollTop = state.route === 'conversation' && state.conversationOutlineOpen ? state.conversationScrollTop : null;
   const scrollAnchor = state.route === 'conversation' && renderedRoute === 'conversation' && !state.conversationOutlineOpen ? captureScrollAnchor(conversationScroller()) : null;
   const page = (pages[state.route] || consolePage)(view, state);
   const routeChanged = Boolean(renderedRoute && state.route !== renderedRoute);
   const nativeTransition = routeChanged && typeof document.startViewTransition === 'function' && !reducedMotion();
-  if (routeChanged && state.route !== 'conversation' && !nativeTransition) page.classList.add('page-enter');
   const conversation = state.route === 'conversation';
   const commit = () => {
     app.classList.toggle('conversation-active', conversation);
-    replaceChildren(app, ...[conversation ? null : header(view, state.route), globalBanner(view, state), h('div', { class: conversation ? 'conversation-layout' : 'main-layout' }, page), nav(conversation ? 'sessions' : state.route)].filter(Boolean));
+    reconcileChildren(app, ...[conversation ? null : header(view, state.route), globalBanner(view, state), h('div', { class: conversation ? 'conversation-layout' : 'main-layout' }, page), nav(conversation ? 'sessions' : state.route)].filter(Boolean));
     if (conversation) {
       restoreScrollAnchor(conversationScroller(), scrollAnchor);
       if (Number.isFinite(outlineScrollTop)) {
@@ -1105,9 +1208,16 @@ export function render(state) {
     renderModal(state);
     renderFocusPanel(state);
     renderNotice(state.notices);
+    if (routeChanged && !nativeTransition) animateFallbackRoute();
   };
-  if (nativeTransition) document.startViewTransition(commit);
-  else commit();
+  if (nativeTransition) {
+    const transition = document.startViewTransition(commit);
+    /* A second navigation or WebView lifecycle change may legitimately skip a
+     * transition. Consume those promises so the visual fallback stays quiet. */
+    transition.ready?.catch(() => {});
+    transition.updateCallbackDone?.catch(() => {});
+    transition.finished?.catch(() => {});
+  } else commit();
 }
 
 function getComposerText() { return document.querySelector('#composer-input')?.value || ''; }
@@ -1180,6 +1290,21 @@ function chooseValue(target) {
     if (!session || !['plan', 'auto', 'acceptEdits'].includes(value)) return;
     sendIntent('session.permissionMode.set', { localSessionId: session.localSessionId, permissionMode: value }, { pendingKey: `mode-${session.localSessionId}` });
     setNotice(`正在切换为 ${permissionModeLabels[value] || value}`);
+    return;
+  }
+  if (scope === 'form') {
+    const form = target.closest('form');
+    const input = form?.elements?.namedItem(name);
+    if (input) input.value = value;
+    const field = target.closest('.choice-field');
+    const displayedValue = field?.querySelector('.choice-value');
+    if (displayedValue) displayedValue.textContent = target.querySelector('span')?.textContent || value;
+    field?.querySelectorAll('.choice-option').forEach((option) => {
+      const selected = option === target;
+      option.setAttribute('aria-selected', String(selected));
+      const check = option.querySelector('.choice-check');
+      if (check) check.textContent = selected ? '✓' : '';
+    });
     return;
   }
   if (scope === 'create') {
@@ -1522,7 +1647,7 @@ export function bindInteractions() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && getState().modal?.type === 'pair') persistPairDraft();
   });
-  document.addEventListener('scroll', syncConversationChrome, { passive: true });
+  document.addEventListener('scroll', queueConversationChromeSync, { passive: true });
   window.addEventListener('resize', queueConversationChromeSync, { passive: true });
 }
 
