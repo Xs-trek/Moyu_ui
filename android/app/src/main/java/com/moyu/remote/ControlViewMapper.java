@@ -8,14 +8,14 @@ final class ControlViewMapper {
     private ControlViewMapper() {}
 
     static JSONObject mapServer(JSONObject raw) throws Exception {
+        Integer protocolVersion = reportedProtocolVersion(raw);
+        int maxMessageBytes = raw.optInt("maxMessageBytes", 0);
+        JSONObject rawFeatures = raw.optJSONObject("features");
         JSONObject view = new JSONObject()
-                .put("version", raw.optString("version", "0.0.3"))
-                .put("protocolVersion", 1)
-                .put("maxMessageBytes", 1048576)
-                .put("features", new JSONObject()
-                        .put("diff", true).put("resume", true)
-                        .put("eventGapSync", true).put("sessionEffort", true)
-                        .put("sessionModel", true).put("sessionPermissionMode", true));
+                .put("version", raw.optString("version", "unknown"))
+                .put("features", rawFeatures == null ? new JSONObject() : new JSONObject(rawFeatures.toString()));
+        if (protocolVersion != null) view.put("protocolVersion", protocolVersion);
+        if (maxMessageBytes > 0) view.put("maxMessageBytes", maxMessageBytes);
         JSONArray mapped = new JSONArray();
         JSONArray adapters = array(raw, "adapters");
         for (int i = 0; i < adapters.length(); i++) {
@@ -29,10 +29,15 @@ final class ControlViewMapper {
             JSONArray sandboxModes = array(configuration, "sandboxModes");
             JSONArray reviewers = array(configuration, "reviewers");
             JSONArray approvalPolicies = array(approval, "policies");
-            JSONArray approvalChoices = new JSONArray().put("allow").put("deny").put("cancel");
+            JSONArray approvalChoices = array(approval, "choices");
             boolean modelConfigurable = configuration != null && configuration.optBoolean("model");
             String modelSelection = configuration == null ? "none"
                     : configuration.optString("modelSelection", modelConfigurable ? "freeform" : "none");
+            JSONObject rawHistory = capabilities == null ? null : capabilities.optJSONObject("history");
+            boolean legacyResume = capabilities != null && capabilities.optBoolean("resume", false);
+            JSONObject history = rawHistory == null
+                    ? new JSONObject().put("list", legacyResume).put("messages", legacyResume).put("resume", legacyResume)
+                    : new JSONObject(rawHistory.toString());
 
             JSONObject caps = new JSONObject()
                     .put("profiles", capabilities != null && capabilities.optBoolean("accountProfiles"))
@@ -46,26 +51,60 @@ final class ControlViewMapper {
                     .put("sandbox", sandboxModes.length() > 0)
                     .put("approvalsReviewer", reviewers.length() > 0)
                     .put("approvalChoices", approvalChoices)
-                    .put("diff", true)
-                    .put("interrupt", capabilities == null || capabilities.optBoolean("interrupt", true))
-                    .put("resume", capabilities == null || capabilities.optBoolean("resume", true))
-                    .put("description", approval == null ? "原生 CLI 事件流"
-                            : approval.optString("semantics", "原生 CLI 事件流"));
+                    .put("approval", new JSONObject().put("choices", new JSONArray(approvalChoices.toString())))
+                    .put("diff", booleanCapability(capabilities, rawFeatures, "diff"))
+                    .put("interrupt", booleanCapability(capabilities, rawFeatures, "interrupt"))
+                    .put("resume", history.optBoolean("resume", false))
+                    .put("history", history);
+            String approvalSemantics = approval == null ? null : nonEmpty(approval.optString("semantics", null));
+            if (approvalSemantics != null) caps.put("description", approvalSemantics);
             JSONObject streaming = capabilities == null ? null : capabilities.optJSONObject("streaming");
             if (streaming != null) caps.put("streaming", new JSONObject(streaming.toString()));
+            JSONObject runtime = capabilities == null ? null : capabilities.optJSONObject("runtime");
+            if (runtime != null) caps.put("runtime", new JSONObject(runtime.toString()));
+            JSONObject attachments = capabilities == null ? null : capabilities.optJSONObject("attachments");
+            if (attachments != null) caps.put("attachments", new JSONObject(attachments.toString()));
 
+            JSONObject compatibility = adapter.optJSONObject("compatibility");
+            String unavailableReason = nonEmpty(adapter.optString("unavailableReason", null));
+            if (unavailableReason == null && compatibility != null) {
+                unavailableReason = nonEmpty(compatibility.optString("reason", null));
+            }
             JSONObject item = new JSONObject()
                     .put("adapter", adapter.optString("kind"))
                     .put("displayName", adapter.optString("displayName", adapter.optString("kind")))
                     .put("available", adapter.optBoolean("available"))
-                    .put("unavailableReason", adapter.optString("unavailableReason"))
                     .put("capabilities", caps);
+            if (unavailableReason != null) item.put("unavailableReason", unavailableReason);
+            if (adapter.has("protocolVersion")) item.put("protocolVersion", adapter.optInt("protocolVersion", -1));
+            if (compatibility != null) item.put("compatibility", new JSONObject(compatibility.toString()));
             copyString(adapter, item, "cliDefaultModel");
             copyString(adapter, item, "effectiveModel");
             copyString(adapter, item, "modelOverride");
             mapped.put(item);
         }
         return view.put("adapters", mapped);
+    }
+
+    /** Missing protocol is accepted only for the explicitly supported v0.0.3 compatibility window. */
+    static boolean isSupportedProtocol(JSONObject raw) {
+        Integer reported = reportedProtocolVersion(raw);
+        if (reported != null) return reported == 1;
+        String version = raw == null ? "" : raw.optString("version", "");
+        return version.equals("0.0.3") || version.startsWith("0.0.3-") || version.startsWith("0.0.3+");
+    }
+
+    static Integer reportedProtocolVersion(JSONObject raw) {
+        if (raw == null || !raw.has("protocolVersion") || raw.isNull("protocolVersion")) return null;
+        Object value = raw.opt("protocolVersion");
+        if (!(value instanceof Number)) return null;
+        int version = ((Number) value).intValue();
+        return version > 0 ? version : null;
+    }
+
+    private static boolean booleanCapability(JSONObject adapter, JSONObject global, String key) {
+        if (adapter != null && adapter.has(key)) return adapter.optBoolean(key, false);
+        return global != null && global.optBoolean(key, false);
     }
 
     static JSONObject mapAccounts(JSONObject raw, JSONObject server, String nodeId) throws Exception {
@@ -103,7 +142,9 @@ final class ControlViewMapper {
     }
 
     static JSONObject mapConfig(JSONObject raw, JSONObject server, JSONObject accounts) throws Exception {
-        String adapter = raw.optString("defaultAdapter", "claude");
+        String adapter = nonEmpty(raw.optString("defaultAdapter", null));
+        if (adapter == null) adapter = firstAdapter(array(server, "adapters"));
+        if (adapter == null) adapter = "";
         JSONObject adapterConfigs = raw.optJSONObject("adapters");
         JSONObject current = adapterConfigs == null ? null : adapterConfigs.optJSONObject(adapter);
         JSONObject adapterStatus = findAdapter(array(server, "adapters"), adapter);
@@ -112,6 +153,7 @@ final class ControlViewMapper {
         JSONArray reviewers = array(caps, "reviewers");
         JSONArray approvalPolicies = array(caps, "approvalPolicies");
         JSONArray effortLevels = array(caps, "effortLevels");
+        JSONArray permissionModes = array(caps, "permissionModes");
 
         JSONObject view = new JSONObject()
                 .put("defaultAdapter", adapter)
@@ -120,7 +162,10 @@ final class ControlViewMapper {
                 .put("reviewers", reviewers)
                 .put("approvalPolicies", approvalPolicies)
                 .put("effortLevels", effortLevels)
+                .put("permissionModes", permissionModes)
                 .put("modelSelection", caps == null ? "none" : caps.optString("modelSelection", "none"));
+        JSONObject attachments = caps == null ? null : caps.optJSONObject("attachments");
+        if (attachments != null) view.put("attachments", new JSONObject(attachments.toString()));
 
         String modelOverride = current == null ? null : nonEmpty(current.optString("model", null));
         view.put("explicitModel", modelOverride != null);
@@ -129,10 +174,12 @@ final class ControlViewMapper {
             view.put("modelOverride", modelOverride);
         }
         if (current != null) {
-            String approvalPolicy = validatedApprovalPolicy(current.optString("approvalPolicy", "on-request"));
-            view.put("approvalPolicy", approvalPolicy == null ? "on-request" : approvalPolicy);
-            if (sandboxModes.length() > 0) view.put("sandbox", current.optString("sandbox", "workspace-write"));
-            if (reviewers.length() > 0) view.put("approvalsReviewer", current.optString("approvalsReviewer", "user"));
+            String approvalPolicy = validatedOption(current.optString("approvalPolicy", null), approvalPolicies);
+            if (approvalPolicy != null) view.put("approvalPolicy", approvalPolicy);
+            String sandbox = validatedOption(current.optString("sandbox", null), sandboxModes);
+            if (sandbox != null) view.put("sandbox", sandbox);
+            String reviewer = validatedOption(current.optString("approvalsReviewer", null), reviewers);
+            if (reviewer != null) view.put("approvalsReviewer", reviewer);
         }
 
         applyActiveProfileModels(view, accounts);
@@ -147,7 +194,9 @@ final class ControlViewMapper {
 
     static void applyActiveProfileModels(JSONObject config, JSONObject accounts) throws Exception {
         if (config == null || accounts == null) return;
-        String adapter = config.optString("defaultAdapter", "claude");
+        String adapter = nonEmpty(config.optString("defaultAdapter", null));
+        if (adapter == null) adapter = firstAdapter(array(accounts, "adapters"));
+        if (adapter == null) return;
         JSONObject accountAdapter = findAdapter(array(accounts, "adapters"), adapter);
         JSONArray profiles = accountAdapter == null ? null : accountAdapter.optJSONArray("profiles");
         JSONObject active = null;
@@ -179,6 +228,15 @@ final class ControlViewMapper {
         return null;
     }
 
+    private static String firstAdapter(JSONArray adapters) {
+        for (int i = 0; i < adapters.length(); i++) {
+            JSONObject item = adapters.optJSONObject(i);
+            String kind = item == null ? null : nonEmpty(item.optString("adapter", item.optString("kind", null)));
+            if (kind != null) return kind;
+        }
+        return null;
+    }
+
     private static JSONArray array(JSONObject source, String key) throws Exception {
         JSONArray value = source == null ? null : source.optJSONArray(key);
         return value == null ? new JSONArray() : new JSONArray(value.toString());
@@ -195,9 +253,10 @@ final class ControlViewMapper {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    static String validatedApprovalPolicy(String value) {
-        if ("untrusted".equals(value) || "on-failure".equals(value)
-                || "on-request".equals(value) || "never".equals(value)) return value;
+    static String validatedOption(String value, JSONArray allowed) {
+        String candidate = nonEmpty(value);
+        if (candidate == null || allowed == null) return null;
+        for (int i = 0; i < allowed.length(); i++) if (candidate.equals(allowed.optString(i))) return candidate;
         return null;
     }
 }

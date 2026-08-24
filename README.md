@@ -49,7 +49,7 @@ Host 必须保证 revision 单调递增。UI 发现 patch 跳号会发送 `view.
 
 ## Mock Host
 
-`preview.html` 顶部可切换 33 个 fixture、日间/夜间/跟随系统主题，也可主动制造 revision gap。Mock Host 会记录 intent，模拟 pending/success/error、text/thinking/tool 流、审批状态、连接和同步变化。状态仅存在于当前页面内存，刷新即清空。
+`preview.html` 顶部可切换 35 个 fixture、日间/夜间/跟随系统主题，也可主动制造 revision gap。Mock Host 会记录 intent，模拟 pending/success/error、text/thinking/tool 流、审批状态、连接和同步变化。状态仅存在于当前页面内存，刷新即清空。
 
 ## 主题与设计修改
 

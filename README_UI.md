@@ -2,7 +2,7 @@
 
 `moyu-ui` 是可直接构建并嵌入 Android WebView 的离线界面。运行时使用 Vanilla HTML、CSS 与 ES Modules，不包含 React、Vue、Tailwind 或其他前端框架。HTML 只渲染 Android Host 提供的 view model、收集用户输入并发送 intent；网络、认证、EasyTier、SQLite、Keystore、同步与后台生命周期全部由 Android 原生层负责。
 
-当前固化版本为 `0.0.3`。Console 只保留活动会话摘要与入口；完整时间线和 Composer 只出现在完整会话页。会话顶部默认使用单行摘要，工作目录、Profile、请求模型、本轮实际模型与上下文信息按需展开。
+当前固化版本为 `0.0.4`。Console 只保留活动会话摘要与入口；完整时间线和 Composer 只出现在完整会话页。会话顶部默认使用单行摘要，工作目录、Profile、请求模型、本轮实际模型与上下文信息按需展开。Claude Code、Codex 和 OpenCode 的可用操作均由后端 capability 投影决定；平台注册表只提供名称和本地图标。
 
 Claude 会话只公开 `Plan`、`Auto`、`Accept Edits` 三种原生模式，并且只允许用户在回合空闲时主动切换。默认与 Auto 不可用时的降级状态均为 `Accept Edits`；降级不会自动重发失败输入。模型也在 Composer 上方手动切换，只改变后续轮次的原生 `--model` 参数。兼容端回报的实际模型（例如自定义 Base URL 后的模型名）显示在回答元数据中，不覆盖用户选择。
 
@@ -108,4 +108,4 @@ object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none';
 - 页面样式：`src/styles/pages.css`
 - 深色主题：`src/styles/themes.css`
 
-替换图标或 logo 时，把自有或经项目方确认用于交付的文件放入 `src/assets/icons/`、`src/assets/logo/` 或 `public/assets/brands/`，只以相对路径引用；信息性 SVG 必须提供可访问名称，装饰性图形使用 `aria-hidden="true"`。Claude Code 与 Codex CLI 当前分别使用随包分发的 Anthropic/OpenAI 官方品牌图形，仅用于识别对应平台；来源和商标声明见 `THIRD_PARTY_NOTICES.md`。替换时必须同步更新声明。
+替换图标或 logo 时，把自有或经项目方确认用于交付的文件放入 `src/assets/icons/`、`src/assets/logo/` 或 `public/assets/brands/`，只以相对路径引用；信息性 SVG 必须提供可访问名称，装饰性图形使用 `aria-hidden="true"`。Claude Code、Codex CLI 与 OpenCode 当前使用随包分发的本地品牌图形，仅用于识别对应平台；来源和商标声明见 `THIRD_PARTY_NOTICES.md`。替换时必须同步更新声明。

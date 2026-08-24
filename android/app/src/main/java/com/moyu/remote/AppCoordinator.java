@@ -129,9 +129,12 @@ public final class AppCoordinator implements AutoCloseable {
                 String localId = pendingPickerSessionId;
                 pendingPickerSessionId = null;
                 requireOnline();
-                if (localId == null || db.getSession(localId) == null) throw new UiFailure("session_not_found", "当前会话不存在", false);
+                MoyuDatabase.SessionRecord session = localId == null ? null : db.getSession(localId);
+                if (session == null) throw new UiFailure("session_not_found", "当前会话不存在", false);
+                int attachmentLimit = AdapterCapabilityPolicy.maxAttachments(serverView, session.kind);
+                if (attachmentLimit < 1) throw new UiFailure("attachments_unsupported", "当前平台不支持图片附件", false);
                 List<JSONObject> pending = pendingAttachments.computeIfAbsent(localId, ignored -> new ArrayList<>());
-                if (pending.size() >= 4) throw new UiFailure("artifact_limit", "每次最多选择 4 张图片", false);
+                if (pending.size() >= attachmentLimit) throw new UiFailure("artifact_limit", "已达到当前平台的图片数量上限", false);
                 JSONObject ref = backend.uploadArtifact(name, mime, data);
                 String artifactId = required(ref, "artifactId");
                 String refMime = required(ref, "mime");
@@ -221,7 +224,10 @@ public final class AppCoordinator implements AutoCloseable {
     private JSONObject handleIntent(String type, JSONObject p) throws Exception {
         switch (type) {
             case "app.ready":
-                required(p, "uiVersion");
+                String uiVersion = required(p, "uiVersion");
+                if (!compatibleUiVersion(uiVersion, BuildConfig.VERSION_NAME)) {
+                    throw new UiFailure("ui_version_incompatible", "UI 版本与 Android 宿主不匹配", false);
+                }
                 uiReady = true;
                 return null;
             case "view.reload": return null;
@@ -239,8 +245,8 @@ public final class AppCoordinator implements AutoCloseable {
                 route = "conversation";
                 db.putSetting("route", route);
                 if (online && activeNodeId != null && activeNodeId.equals(opened.nodeId)) {
-                    if (opened.remoteSessionId != null) { if(opened.nativeSessionId!=null&&opened.nativeCachedSeq>0)completeNativePromotion(opened);else syncOne(opened); subscribe(opened); }
-                    else if (opened.nativeSessionId != null) syncNativeMessages(opened, true);
+                    if (opened.remoteSessionId != null) { if(opened.resumeRef!=null&&opened.nativeCachedSeq>0)completeNativePromotion(opened);else syncOne(opened); subscribe(opened); }
+                    else if (opened.resumeRef != null && AdapterCapabilityPolicy.supportsHistory(serverView, opened.kind, "messages")) syncNativeMessages(opened, true);
                 }
                 return null;
             case "session.create": return createSession(p);
@@ -248,8 +254,11 @@ public final class AppCoordinator implements AutoCloseable {
             case "attachment.pick":
                 requireOnline();
                 String pickSession = required(p, "localSessionId");
-                if (!pickSession.equals(activeSessionId) || db.getSession(pickSession) == null) throw new UiFailure("session_not_found", "当前会话不存在", false);
-                if (pendingAttachments.getOrDefault(pickSession, new ArrayList<>()).size() >= 4) throw new UiFailure("artifact_limit", "每次最多选择 4 张图片", false);
+                MoyuDatabase.SessionRecord pickerSession = db.getSession(pickSession);
+                if (!pickSession.equals(activeSessionId) || pickerSession == null) throw new UiFailure("session_not_found", "当前会话不存在", false);
+                int pickerLimit = AdapterCapabilityPolicy.maxAttachments(serverView, pickerSession.kind);
+                if (pickerLimit < 1) throw new UiFailure("attachments_unsupported", "当前平台不支持图片附件", false);
+                if (pendingAttachments.getOrDefault(pickSession, new ArrayList<>()).size() >= pickerLimit) throw new UiFailure("artifact_limit", "已达到当前平台的图片数量上限", false);
                 pendingPickerSessionId = pickSession;
                 host.pickImage(); return null;
             case "attachment.remove": removePendingAttachment(required(p, "localSessionId"), required(p, "artifactId")); return null;
@@ -355,18 +364,25 @@ public final class AppCoordinator implements AutoCloseable {
                     : new BackendClient(node.backendVip, node.gatewayPort, node.socksPort, token);
             long started=SystemClock.elapsedRealtime();
             JSONObject serverRaw=backend.getObject("/server/info");
+            if(!ControlViewMapper.isSupportedProtocol(serverRaw)){
+                Integer reported=ControlViewMapper.reportedProtocolVersion(serverRaw);
+                throw new UiFailure("protocol_incompatible",reported==null
+                        ?"后端未报告受支持的协议版本":"后端协议版本不受支持: "+reported,false);
+            }
             phoneBackendRttMs=SystemClock.elapsedRealtime()-started;
             serverView=mapServer(serverRaw);
             accountsView=mapAccounts(backend.getObject("/accounts"), serverView, node.nodeId);
-            configView=mapConfig(backend.getObject("/config"), serverRaw);
+            configView=mapConfig(backend.getObject("/config"), serverView);
             netView=backend.getObject("/net/status");
             connectionState="syncing"; connectionSummary="正在合并本地历史与后端事件"; syncState="syncing"; emitView();
             syncAllSessions(node.nodeId);
             node.lastConnectedAt=Instant.now().toString(); db.saveNode(node);
             openWebSocket();
         } catch (Exception error) {
-            setConnectionError(error instanceof BackendClient.BackendException ? ((BackendClient.BackendException) error).code : "network_unreachable", safe(error.getMessage()), true);
-            scheduleReconnect();
+            String code=error instanceof BackendClient.BackendException?((BackendClient.BackendException)error).code:error instanceof UiFailure?((UiFailure)error).code:"network_unreachable";
+            boolean retryable=error instanceof BackendClient.BackendException?((BackendClient.BackendException)error).retryable:!(error instanceof UiFailure)||((UiFailure)error).retryable;
+            setConnectionError(code,safe(error.getMessage()),retryable);
+            if(retryable)scheduleReconnect();
         }
     }
 
@@ -397,43 +413,47 @@ public final class AppCoordinator implements AutoCloseable {
             MoyuDatabase.SessionRecord local=upsertSessionSummary(nodeId,remote);
             complete=syncOne(local)&&complete;
         }
-        try { syncNativeSummaries(nodeId); } catch (Exception ignored) { /* Native history is additive; it must not block live sessions. */ }
+        try { if(AdapterCapabilityPolicy.supportsAnyHistory(serverView,"list"))syncNativeSummaries(nodeId); } catch (Exception ignored) { /* Adapter history is additive; it must not block live sessions. */ }
         if(complete)markSynced();
     }
 
     private void syncNativeSummaries(String nodeId) throws Exception {
+        if(!AdapterCapabilityPolicy.supportsAnyHistory(serverView,"list"))return;
         int offset = 0, processed = 0, prefetched = 0;
         for (int page = 0; page < NativeHistoryPaging.MAX_PAGES && processed < NativeHistoryPaging.MAX_ITEMS; page++) {
-            JSONObject snapshot = backend.getObject("/native-sessions?limit=" + NativeHistoryPaging.PAGE_SIZE + "&offset=" + offset);
+            JSONObject snapshot = backend.getObject("/history?limit=" + NativeHistoryPaging.PAGE_SIZE + "&offset=" + offset);
             JSONArray items = snapshot.optJSONArray("items");
             if (items == null) items = new JSONArray();
             for (int i = 0; i < items.length() && processed < NativeHistoryPaging.MAX_ITEMS; i++, processed++) {
                 JSONObject nativeItem = items.optJSONObject(i);
                 if (nativeItem == null) continue;
-                String kind = nativeItem.optString("kind");
-                String nativeId = nativeItem.optString("nativeSessionId");
-                if (!("claude".equals(kind) || "codex".equals(kind)) || !ArtifactCache.isValidId(nativeId)) continue;
-                MoyuDatabase.SessionRecord local = db.findNativeSession(nodeId, kind, nativeId);
+                String kind = emptyToNull(nativeItem.optString("kind", "").trim());
+                String resumeRef = AdapterCapabilityPolicy.resumeRef(nativeItem);
+                if (kind == null || resumeRef == null || !AdapterCapabilityPolicy.supportsHistory(serverView,kind,"list")) continue;
+                MoyuDatabase.SessionRecord local = db.findResumeSession(nodeId, kind, resumeRef);
                 if (local == null) {
                     local = new MoyuDatabase.SessionRecord();
                     local.localSessionId = UUID.randomUUID().toString();
                     local.nodeId = nodeId;
-                    local.nativeSessionId = nativeId;
+                    local.resumeRef = resumeRef;
                     local.kind = kind;
                     local.draft = "";
                     local.state = "localOnly";
                 }
                 boolean nativeOnly = local.remoteSessionId == null;
                 if (nativeOnly) {
-                    local.title = nativeItem.optString("title", local.title == null ? kind + " " + nativeId.substring(0, 8) : local.title);
+                    String fallbackTitle=local.title==null?kind+" "+shortRef(resumeRef):local.title;
+                    local.title = nativeItem.optString("title", fallbackTitle);
                     local.cwd = nullable(nativeItem, "cwd");
                     local.model = nullable(nativeItem, "model");
+                    local.effort = nullable(nativeItem, "effort");
+                    local.permissionMode = nullable(nativeItem, "permissionMode");
                     local.updatedAt = nativeItem.optString("updatedAt", local.updatedAt == null ? Instant.now().toString() : local.updatedAt);
                     local.state = "localOnly";
                 }
                 local.nativeMessageCount = Math.max(0, nativeItem.optInt("messageCount", local.nativeMessageCount));
                 db.saveSession(local);
-                if (prefetched < NATIVE_PREFETCH_LIMIT && local.remoteSessionId == null) {
+                if (prefetched < NATIVE_PREFETCH_LIMIT && local.remoteSessionId == null&&AdapterCapabilityPolicy.supportsHistory(serverView,kind,"messages")) {
                     prefetched++;
                     try { syncNativeMessages(local, false); } catch (Exception ignored) { /* Keep the summary and any older cache. */ }
                 }
@@ -445,7 +465,8 @@ public final class AppCoordinator implements AutoCloseable {
     }
 
     private void syncNativeMessages(MoyuDatabase.SessionRecord session, boolean allPages) throws Exception {
-        if (session.nativeSessionId == null || session.remoteSessionId != null) return;
+        if (session.resumeRef == null || session.remoteSessionId != null) return;
+        if(!AdapterCapabilityPolicy.supportsHistory(serverView,session.kind,"messages"))throw new UiFailure("history_unsupported","当前平台不支持历史消息读取",false);
         if (session.nativeMessageCount < session.nativeCachedSeq) {
             db.deleteTimeline(session.localSessionId);
             session.nativeCachedSeq = 0;
@@ -454,7 +475,7 @@ public final class AppCoordinator implements AutoCloseable {
         int after = session.nativeCachedSeq;
         int maxPages = allPages ? 50 : 1;
         for (int page = 0; page < maxPages; page++) {
-            JSONObject response = backend.getObject("/native-sessions/" + session.kind + "/" + path(session.nativeSessionId) + "/messages?after=" + after + "&limit=100");
+            JSONObject response = backend.getObject("/history/" + path(session.kind) + "/" + path(session.resumeRef) + "/messages?after=" + after + "&limit=100");
             JSONArray messages = response.optJSONArray("items");
             if (messages != null) for (int i = 0; i < messages.length(); i++) persistNativeMessage(session, messages.optJSONObject(i));
             int next = response.optInt("nextAfter", after);
@@ -472,7 +493,7 @@ public final class AppCoordinator implements AutoCloseable {
         if (message == null) return;
         int seq = message.optInt("seq");
         if (seq < 1) return;
-        String prefix = NativeHistoryKeys.prefix(session.localSessionId, session.kind, session.nativeSessionId) + seq;
+        String prefix = NativeHistoryKeys.prefix(session.localSessionId, session.kind, session.resumeRef) + seq;
         String created = message.optString("createdAt", session.updatedAt == null ? Instant.now().toString() : session.updatedAt);
         String thinking = message.optString("thinking", "");
         if (!thinking.isEmpty()) {
@@ -499,14 +520,14 @@ public final class AppCoordinator implements AutoCloseable {
     }
 
     private MoyuDatabase.SessionRecord upsertSessionSummary(String nodeId, JSONObject remote) {
-        String remoteId=remote.optString("sessionId");String kind=remote.optString("kind","claude");String cliRef=nullable(remote,"cliSessionRef");boolean validCliRef=ArtifactCache.isValidId(cliRef);
-        MoyuDatabase.SessionRecord local=db.findRemoteSession(nodeId,remoteId);MoyuDatabase.SessionRecord nativeMatch=validCliRef?db.findNativeSession(nodeId,kind,cliRef):null;
+        String remoteId=remote.optString("sessionId");MoyuDatabase.SessionRecord local=db.findRemoteSession(nodeId,remoteId);String kind=nullable(remote,"kind");if(kind==null)kind=local==null?"unknown":local.kind;String resumeRef=AdapterCapabilityPolicy.resumeRef(remote);
+        MoyuDatabase.SessionRecord nativeMatch=resumeRef==null?null:db.findResumeSession(nodeId,kind,resumeRef);
         MoyuDatabase.SessionRecord obsolete=null;
         if(local!=null&&nativeMatch!=null&&!local.localSessionId.equals(nativeMatch.localSessionId)){obsolete=local;local=nativeMatch;NativeHistoryIdentity.mergeLiveState(local,obsolete);}
         else if(local==null&&nativeMatch!=null)local=nativeMatch;
         if(local==null){local=new MoyuDatabase.SessionRecord();local.localSessionId=UUID.randomUUID().toString();local.nodeId=nodeId;local.draft="";}
         local.remoteSessionId=remoteId;local.kind=kind;
-        if(validCliRef&&NativeHistoryIdentity.shouldBind(kind,remoteId,cliRef,nativeMatch!=null))local.nativeSessionId=cliRef;
+        if(NativeHistoryIdentity.shouldBind(resumeRef))local.resumeRef=resumeRef;
         local.title=remote.optString("title",local.title==null?"未命名会话":local.title); local.cwd=nullable(remote,"cwd");
         local.profileId=nullable(remote,"profileId");String requestedModel=nullable(remote,"requestedModel");local.model=requestedModel!=null?requestedModel:nullable(remote,"model");local.effort=nullable(remote,"effort");local.permissionMode=nullable(remote,"permissionMode");local.updatedAt=remote.optString("updatedAt",Instant.now().toString());
         local.state=mapTurnState(remote.optString("turnState","idle"));
@@ -538,7 +559,7 @@ public final class AppCoordinator implements AutoCloseable {
             if(truncatedBeforeSeq!=null)truncatedBeforeSeq[0]=Math.max(truncatedBeforeSeq[0],sync.optInt("messagesTruncatedBeforeSeq",0));
             JSONArray messages=sync.optJSONArray("messages"); if(messages!=null) for(int i=0;i<messages.length();i++) persistCanonicalMessage(session,messages.optJSONObject(i));
             JSONArray events=sync.optJSONArray("events"); if(events!=null) for(int i=0;i<events.length();i++) processEventEnvelope(events.optJSONObject(i),false);
-            JSONObject summary=sync.optJSONObject("session");if(summary!=null){String requested=nullable(summary,"requestedModel");session.model=requested!=null?requested:nullable(summary,"model");session.effort=nullable(summary,"effort");session.permissionMode=nullable(summary,"permissionMode");session.state=mapTurnState(summary.optString("turnState",session.state));session.updatedAt=summary.optString("updatedAt",session.updatedAt);}
+            JSONObject summary=sync.optJSONObject("session");if(summary!=null){String requested=nullable(summary,"requestedModel");session.model=requested!=null?requested:nullable(summary,"model");session.effort=nullable(summary,"effort");session.permissionMode=nullable(summary,"permissionMode");String resumeRef=AdapterCapabilityPolicy.resumeRef(summary);if(resumeRef!=null)session.resumeRef=resumeRef;session.state=mapTurnState(summary.optString("turnState",session.state));session.updatedAt=summary.optString("updatedAt",session.updatedAt);}
             after=sync.optInt("nextAfterSeq",after);
             messageAfter=sync.optInt("nextMessageAfterSeq",messageAfter==null?after:messageAfter);
             session.lastSeq=Math.max(session.lastSeq,after); db.saveSession(session);
@@ -548,14 +569,28 @@ public final class AppCoordinator implements AutoCloseable {
     }
 
     private void persistCanonicalMessage(MoyuDatabase.SessionRecord session, JSONObject message) throws Exception {
-        if(message==null)return;int seq=message.optInt("seq");String created=message.optString("createdAt",Instant.now().toString());String thinking=message.optString("thinking","");
-        if(!thinking.isEmpty())db.putTimeline(session.localSessionId,"thinking:"+session.remoteSessionId+":"+seq,seq,new JSONObject().put("kind","thinking").put("text",thinking).put("streaming",false).put("createdAt",created));
-        if("tool".equals(message.optString("role"))){JSONObject item=new JSONObject().put("kind","tool").put("toolCallId",message.optString("toolCallId","tool-"+seq)).put("tool",message.optString("tool","tool"));if(message.has("toolInput"))item.put("input",message.opt("toolInput"));item.put("output",message.optString("toolOutput",message.optString("text",""))).put("state","done").put("createdAt",created);attachCachedArtifacts(item,message.optJSONArray("artifacts"));db.putTimeline(session.localSessionId,"tool:"+session.remoteSessionId+":"+message.optString("toolCallId","tool-"+seq),seq,item);return;}
+        persistCanonicalMessage(session,message,message==null?0:message.optInt("seq"));
+    }
+
+    private void persistCanonicalMessage(MoyuDatabase.SessionRecord session, JSONObject message, int envelopeSeq) throws Exception {
+        if(message==null)return;int seq=message.has("seq")?message.optInt("seq"):envelopeSeq;String created=message.optString("createdAt",Instant.now().toString());String thinking=message.optString("thinking","");
+        String rawSource=message.has("sourceId")&&!message.isNull("sourceId")?message.optString("sourceId",null):null;
+        String sourceId=AdapterCapabilityPolicy.validOpaqueId(rawSource);
+        if(rawSource!=null&&sourceId==null)return;
+        if(!thinking.isEmpty()){
+            JSONObject thinkingItem=new JSONObject().put("kind","thinking").put("text",thinking).put("streaming",false).put("createdAt",created);
+            if(sourceId!=null)thinkingItem.put("sourceId",sourceId);
+            String thinkingKey=sourceId==null?"thinking:"+session.remoteSessionId+":"+seq
+                    :"source-thinking:"+UUID.nameUUIDFromBytes((session.remoteSessionId+"\u0000"+sourceId).getBytes(StandardCharsets.UTF_8));
+            db.putTimeline(session.localSessionId,thinkingKey,seq,thinkingItem);
+        }
+        if("tool".equals(message.optString("role"))){JSONObject item=new JSONObject().put("kind","tool").put("toolCallId",message.optString("toolCallId","tool-"+seq)).put("tool",message.optString("tool","tool"));if(message.has("toolInput"))item.put("input",message.opt("toolInput"));item.put("output",message.optString("toolOutput",message.optString("text",""))).put("state","done").put("createdAt",created);attachCachedArtifacts(item,message.optJSONArray("artifacts"));if(sourceId!=null)db.putSourceTimeline(session.localSessionId,session.remoteSessionId,sourceId,seq,item);else db.putTimeline(session.localSessionId,"tool:"+session.remoteSessionId+":"+message.optString("toolCallId","tool-"+seq),seq,item);return;}
         String text=message.optString("text","");JSONArray refs=message.optJSONArray("artifacts");if(text.isEmpty()&&(refs==null||refs.length()==0))return;
         String role=message.optString("role","system");if(!role.matches("user|assistant|system"))role="system";
         if("system".equals(role)&&(text.startsWith("[approval:")||text.startsWith("[error:")))return;
-        JSONObject item=new JSONObject().put("kind","message").put("role",role).put("text",text).put("createdAt",created);attachCachedArtifacts(item,refs);String key="m:"+session.remoteSessionId+":"+seq;
-        if("user".equals(role))db.putCanonicalUserTimeline(session.localSessionId,key,seq,item);else db.putTimeline(session.localSessionId,key,seq,item);
+        JSONObject item=new JSONObject().put("kind","message").put("role",role).put("text",text).put("createdAt",created);attachCachedArtifacts(item,refs);
+        if(sourceId!=null)db.putSourceTimeline(session.localSessionId,session.remoteSessionId,sourceId,seq,item);
+        else{String key="m:"+session.remoteSessionId+":"+seq;if("user".equals(role))db.putCanonicalUserTimeline(session.localSessionId,key,seq,item);else db.putTimeline(session.localSessionId,key,seq,item);}
     }
 
     private void handleWs(JSONObject message) {
@@ -573,7 +608,8 @@ public final class AppCoordinator implements AutoCloseable {
         if(envelope==null)return; int seq=envelope.optInt("seq"); String remoteId=envelope.optString("sessionId"); MoyuDatabase.SessionRecord session=findByRemote(remoteId);if(session==null)return;
         if(seq>0&&seq<=session.lastSeq){if(acknowledge)ack(seq);return;}
         JSONObject event=envelope.optJSONObject("event");if(event==null)return; String type=event.optString("type");String now=Instant.now().toString();
-        if("turn.started".equals(type)){session.state="running";textStreams.remove(session.localSessionId);thinkingStreams.remove(session.localSessionId);}
+        if("message.upsert".equals(type)){persistCanonicalMessage(session,event.optJSONObject("message"),seq);}
+        else if("turn.started".equals(type)){session.state="running";textStreams.remove(session.localSessionId);thinkingStreams.remove(session.localSessionId);}
         else if("thinking.delta".equals(type)){LiveStream stream=thinkingStreams.computeIfAbsent(session.localSessionId,k->new LiveStream(now));stream.text.append(event.optString("text"));
             db.putTimeline(session.localSessionId,"live:thinking:"+session.localSessionId,seq,new JSONObject().put("kind","thinking").put("text",stream.text.toString()).put("streaming",true).put("createdAt",stream.createdAt));}
         else if("thinking.done".equals(type)){LiveStream stream=thinkingStreams.remove(session.localSessionId);if(stream!=null)db.putTimeline(session.localSessionId,"live:thinking:"+session.localSessionId,seq,new JSONObject().put("kind","thinking").put("text",stream.text.toString()).put("streaming",false).put("createdAt",stream.createdAt));}
@@ -587,7 +623,7 @@ public final class AppCoordinator implements AutoCloseable {
         else if("approval.request".equals(type)){db.deleteTimelineItem("m:"+remoteId+":"+seq);JSONObject approval=new JSONObject().put("approvalId",event.optString("approvalId")).put("kind",event.optString("kind","permission")).put("summary",event.optString("summary","需要审批")).put("choices",event.optJSONArray("choices")==null?new JSONArray():event.optJSONArray("choices")).put("state","pending");if(event.has("tool"))approval.put("tool",event.opt("tool"));if(event.has("input"))approval.put("input",event.opt("input"));db.putTimeline(session.localSessionId,"approval:"+remoteId+":"+event.optString("approvalId"),seq,new JSONObject().put("kind","approval").put("approval",approval).put("createdAt",now));}
         else if("approval.resolved".equals(type)){String id=event.optString("approvalId");String key="approval:"+remoteId+":"+id;JSONObject existing=db.timelineItem(key);JSONObject approval=existing==null?null:existing.optJSONObject("approval");if(approval==null)approval=new JSONObject().put("approvalId",id).put("kind","permission").put("summary","审批已处理");String decision=event.optString("decision");approval.put("choices",new JSONArray()).put("state",("deny".equals(decision)||"cancel".equals(decision))?"denied":"allowed");db.putTimeline(session.localSessionId,key,seq,new JSONObject().put("kind","approval").put("approval",approval).put("createdAt",existing==null?now:existing.optString("createdAt",now)));}
         else if("turn.completed".equals(type)){session.state="completed";String runtimeModel=event.optString("model","").trim();String runtimeEffort=event.optString("effort","").trim();if(!runtimeEffort.isEmpty())session.effort=runtimeEffort;JSONObject meta=new JSONObject().put("kind","usage").put("usage",event.optJSONObject("usage")==null?new JSONObject():event.optJSONObject("usage")).put("createdAt",now);if(!runtimeModel.isEmpty())meta.put("model",runtimeModel);if(!runtimeEffort.isEmpty())meta.put("effort",runtimeEffort);JSONObject performance=event.optJSONObject("performance");if(performance!=null){long observedDurationMs=performance.optLong("observedDurationMs",-1);if(observedDurationMs>=0)meta.put("performance",new JSONObject().put("observedDurationMs",observedDurationMs));}db.putTimeline(session.localSessionId,"usage:"+remoteId+":"+seq,seq,meta);}
-        else if("turn.failed".equals(type)){session.state="failed";String fallbackMode=event.optString("permissionMode","");if("plan".equals(fallbackMode)||"auto".equals(fallbackMode)||"acceptEdits".equals(fallbackMode))session.permissionMode=fallbackMode;db.deleteTimelineItem("m:"+remoteId+":"+seq);db.putTimeline(session.localSessionId,"error:"+remoteId+":"+seq,seq,new JSONObject().put("kind","error").put("error",uiError(event.optString("category","unknown"),event.optString("summary","CLI 执行失败"),false)).put("createdAt",now));}
+        else if("turn.failed".equals(type)){session.state="failed";String fallbackMode=nullable(event,"permissionMode");if(fallbackMode!=null)session.permissionMode=fallbackMode;db.deleteTimelineItem("m:"+remoteId+":"+seq);db.putTimeline(session.localSessionId,"error:"+remoteId+":"+seq,seq,new JSONObject().put("kind","error").put("error",uiError(event.optString("category","unknown"),event.optString("summary","CLI 执行失败"),false)).put("createdAt",now));}
         else if("transport.metrics".equals(type)){transportView=event.optJSONObject("metrics");}
         session.lastSeq=Math.max(session.lastSeq,seq);if(ViewEmissionPolicy.updatesSessionTimestamp(type))session.updatedAt=now;db.saveSession(session);
         if(acknowledge){ack(seq);if(ViewEmissionPolicy.shouldThrottle(type))viewEmitter.request();else emitView();}
@@ -598,8 +634,12 @@ public final class AppCoordinator implements AutoCloseable {
 
     private JSONObject createSession(JSONObject p) throws Exception {
         requireOnline(); String nodeId=required(p,"nodeId");if(!nodeId.equals(activeNodeId))throw new UiFailure("wrong_node","请先连接所选节点",true);
-        String kind=required(p,"kind");JSONObject body=new JSONObject().put("kind",kind);copyNonEmpty(p,body,"cwd");copyNonEmpty(p,body,"title");copyNonEmpty(p,body,"profileId");copyNonEmpty(p,body,"model");copyNonEmpty(p,body,"effort");
-        if("claude".equals(kind))body.put("permissionMode",p.optString("permissionMode","acceptEdits"));
+        String kind=required(p,"kind");if(!AdapterCapabilityPolicy.isAvailable(serverView,kind))throw new UiFailure("adapter_unavailable","当前平台不可用或协议不兼容",false);
+        String profileId=nullable(p,"profileId");if(profileId!=null&&!AdapterCapabilityPolicy.supportsProfiles(serverView,kind))throw new UiFailure("profile_unavailable","当前平台不支持 Profile",false);
+        String model=nullable(p,"model");if(model!=null&&!AdapterCapabilityPolicy.supportsModel(serverView,kind))throw new UiFailure("unsupported_model","当前平台不支持会话模型配置",false);
+        String effort=nullable(p,"effort");if(!AdapterCapabilityPolicy.supportsValue(serverView,kind,"effortLevels",effort))throw new UiFailure("unsupported_effort","当前平台不支持所选推理深度",false);
+        String permissionMode=nullable(p,"permissionMode");if(!AdapterCapabilityPolicy.supportsValue(serverView,kind,"permissionModes",permissionMode))throw new UiFailure("unsupported_permission_mode","当前平台不支持所选权限模式",false);
+        JSONObject body=AdapterCapabilityPolicy.createSessionBody(p);
         JSONObject created=backend.post("/sessions",body);JSONObject summary=created.optJSONObject("session");if(summary==null)summary=created;
         if(!summary.has("sessionId")&&created.has("sessionId"))summary.put("sessionId",created.opt("sessionId"));
         MoyuDatabase.SessionRecord session=upsertSessionSummary(nodeId,summary);activeSessionId=session.localSessionId;db.putSetting("activeSessionId",activeSessionId);route="conversation";db.putSetting("route",route);subscribe(session);
@@ -615,8 +655,8 @@ public final class AppCoordinator implements AutoCloseable {
         if(activeNodeId==null||!activeNodeId.equals(s.nodeId))throw new UiFailure("wrong_node","请先连接该会话所属节点",true);
         List<JSONObject> pending=pendingAttachments.getOrDefault(localId,new ArrayList<>());
         if(text.isEmpty()&&pending.isEmpty())throw new UiFailure("bad_intent","请输入消息或选择图片",false);
-        if(s.remoteSessionId==null){if(s.nativeSessionId==null)throw new UiFailure("session_not_found","远端会话不存在或已结束",false);resumeNativeSession(s);}
-        else if(s.nativeSessionId!=null&&s.nativeCachedSeq>0)completeNativePromotion(s);
+        if(s.remoteSessionId==null){if(s.resumeRef==null)throw new UiFailure("session_not_found","远端会话不存在或已结束",false);resumeNativeSession(s);}
+        else if(s.resumeRef!=null&&s.nativeCachedSeq>0)completeNativePromotion(s);
         JSONArray ids=new JSONArray();JSONArray localArtifacts=new JSONArray();
         for(JSONObject ref:pending){ids.put(ref.optString("artifactId"));localArtifacts.put(ref);}
         JSONObject accepted=backend.post("/sessions/"+path(s.remoteSessionId)+"/input",new JSONObject().put("text",text).put("attachments",ids));
@@ -626,13 +666,15 @@ public final class AppCoordinator implements AutoCloseable {
     }
 
     private void resumeNativeSession(MoyuDatabase.SessionRecord session)throws Exception{
-        if(session.nativeCachedSeq<session.nativeMessageCount)syncNativeMessages(session,true);
-        JSONObject response=backend.post("/native-sessions/"+session.kind+"/"+path(session.nativeSessionId)+"/resume",new JSONObject());
+        if(session.resumeRef==null||!AdapterCapabilityPolicy.supportsHistory(serverView,session.kind,"resume"))throw new UiFailure("resume_unsupported","当前平台不支持恢复此历史会话",false);
+        if(session.nativeCachedSeq<session.nativeMessageCount&&AdapterCapabilityPolicy.supportsHistory(serverView,session.kind,"messages"))syncNativeMessages(session,true);
+        JSONObject response=backend.post("/history/"+path(session.kind)+"/"+path(session.resumeRef)+"/resume",new JSONObject());
         JSONObject summary=response.optJSONObject("session");if(summary==null)summary=response;
         String remoteId=response.optString("sessionId",summary.optString("sessionId"));
         if(remoteId.isEmpty())throw new UiFailure("bad_response","后端未返回恢复后的会话标识",false);
         session.remoteSessionId=remoteId;session.profileId=nullable(summary,"profileId");
-        String resumedModel=nullable(summary,"model");if(resumedModel!=null)session.model=resumedModel;
+        String resumedModel=nullable(summary,"requestedModel");if(resumedModel==null)resumedModel=nullable(summary,"model");if(resumedModel!=null)session.model=resumedModel;
+        String resumedRef=AdapterCapabilityPolicy.resumeRef(summary);if(resumedRef!=null)session.resumeRef=resumedRef;
         session.effort=nullable(summary,"effort");session.permissionMode=nullable(summary,"permissionMode");session.state=mapTurnState(summary.optString("turnState","idle"));
         session.lastSeq=0;db.saveSession(session);
         completeNativePromotion(session);subscribe(session);
@@ -642,23 +684,24 @@ public final class AppCoordinator implements AutoCloseable {
         session.lastSeq=0;db.saveSession(session);
         int[] truncatedBeforeSeq=new int[]{0};
         if(!syncOne(session,truncatedBeforeSeq))throw new UiFailure("history_sync_incomplete","原生历史尚未完整同步，请重试",true);
-        String prefix=NativeHistoryKeys.prefix(session.localSessionId,session.kind,session.nativeSessionId);
+        String prefix=NativeHistoryKeys.prefix(session.localSessionId,session.kind,session.resumeRef);
         if(NativeHistoryRetention.backendContainsFullHistory(truncatedBeforeSeq[0]))db.deleteTimelinePrefix(session.localSessionId,prefix);
         else db.deleteTimelinePrefixAfterRemoteSeq(session.localSessionId,prefix,truncatedBeforeSeq[0]);
         session.nativeCachedSeq=0;db.saveSession(session);
     }
     private void saveDraft(JSONObject p)throws Exception{String id=nullable(p,"localSessionId");if(id!=null)db.setDraft(id,p.optString("text",""));}
-    private void setSessionEffort(JSONObject p)throws Exception{requireOnline();String localId=required(p,"localSessionId");MoyuDatabase.SessionRecord s=db.getSession(localId);if(s==null)throw new UiFailure("session_not_found","会话不存在",false);if(activeNodeId==null||!activeNodeId.equals(s.nodeId))throw new UiFailure("wrong_node","请先连接该会话所属节点",true);if(s.remoteSessionId==null&&s.nativeSessionId!=null)resumeNativeSession(s);if(s.remoteSessionId==null)throw new UiFailure("session_not_found","远端会话不存在或已结束",false);String effort=nullable(p,"effort");JSONObject body=new JSONObject().put("effort",effort==null?JSONObject.NULL:effort);JSONObject response=backend.post("/sessions/"+path(s.remoteSessionId)+"/effort",body);JSONObject summary=response.optJSONObject("session");if(summary!=null){s.effort=nullable(summary,"effort");s.updatedAt=summary.optString("updatedAt",Instant.now().toString());db.saveSession(s);}}
-    private void setSessionModel(JSONObject p)throws Exception{requireOnline();String localId=required(p,"localSessionId");MoyuDatabase.SessionRecord s=sessionForConfiguration(localId);String model=nullable(p,"model");JSONObject response=backend.post("/sessions/"+path(s.remoteSessionId)+"/model",new JSONObject().put("model",model==null?JSONObject.NULL:model));JSONObject summary=response.optJSONObject("session");if(summary!=null){s.model=nullable(summary,"model");s.updatedAt=summary.optString("updatedAt",Instant.now().toString());db.saveSession(s);}}
-    private void setSessionPermissionMode(JSONObject p)throws Exception{requireOnline();String localId=required(p,"localSessionId");MoyuDatabase.SessionRecord s=sessionForConfiguration(localId);String mode=required(p,"permissionMode");if(!mode.matches("plan|auto|acceptEdits"))throw new UiFailure("bad_intent","未知会话模式",false);JSONObject response=backend.post("/sessions/"+path(s.remoteSessionId)+"/permission-mode",new JSONObject().put("permissionMode",mode));JSONObject summary=response.optJSONObject("session");if(summary!=null){s.permissionMode=nullable(summary,"permissionMode");s.updatedAt=summary.optString("updatedAt",Instant.now().toString());db.saveSession(s);}}
-    private MoyuDatabase.SessionRecord sessionForConfiguration(String localId)throws Exception{MoyuDatabase.SessionRecord s=db.getSession(localId);if(s==null)throw new UiFailure("session_not_found","会话不存在",false);if("running".equals(s.state))throw new UiFailure("session_busy","当前回合运行中，完成或中断后再切换",false);if(activeNodeId==null||!activeNodeId.equals(s.nodeId))throw new UiFailure("wrong_node","请先连接该会话所属节点",true);if(s.remoteSessionId==null&&s.nativeSessionId!=null)resumeNativeSession(s);if(s.remoteSessionId==null)throw new UiFailure("session_not_found","远端会话不存在或已结束",false);return s;}
-    private void interrupt(String localId)throws Exception{requireOnline();MoyuDatabase.SessionRecord s=sessionRemote(localId);backend.post("/sessions/"+path(s.remoteSessionId)+"/interrupt",new JSONObject());}
+    private void setSessionEffort(JSONObject p)throws Exception{requireOnline();String localId=required(p,"localSessionId");MoyuDatabase.SessionRecord s=sessionForConfiguration(localId);String effort=nullable(p,"effort");if(!AdapterCapabilityPolicy.supportsValue(serverView,s.kind,"effortLevels",effort))throw new UiFailure("unsupported_effort","当前平台不支持所选推理深度",false);JSONObject body=new JSONObject().put("effort",effort==null?JSONObject.NULL:effort);JSONObject response=backend.post("/sessions/"+path(s.remoteSessionId)+"/effort",body);JSONObject summary=response.optJSONObject("session");if(summary!=null){s.effort=nullable(summary,"effort");s.updatedAt=summary.optString("updatedAt",Instant.now().toString());db.saveSession(s);}}
+    private void setSessionModel(JSONObject p)throws Exception{requireOnline();String localId=required(p,"localSessionId");MoyuDatabase.SessionRecord s=sessionForConfiguration(localId);if(!AdapterCapabilityPolicy.supportsModel(serverView,s.kind))throw new UiFailure("unsupported_model","当前平台不支持会话模型配置",false);String model=nullable(p,"model");JSONObject response=backend.post("/sessions/"+path(s.remoteSessionId)+"/model",new JSONObject().put("model",model==null?JSONObject.NULL:model));JSONObject summary=response.optJSONObject("session");if(summary!=null){String requested=nullable(summary,"requestedModel");s.model=requested!=null?requested:nullable(summary,"model");s.updatedAt=summary.optString("updatedAt",Instant.now().toString());db.saveSession(s);}}
+    private void setSessionPermissionMode(JSONObject p)throws Exception{requireOnline();String localId=required(p,"localSessionId");MoyuDatabase.SessionRecord s=sessionForConfiguration(localId);String mode=required(p,"permissionMode");if(!AdapterCapabilityPolicy.supportsValue(serverView,s.kind,"permissionModes",mode))throw new UiFailure("unsupported_permission_mode","当前平台不支持所选权限模式",false);JSONObject response=backend.post("/sessions/"+path(s.remoteSessionId)+"/permission-mode",new JSONObject().put("permissionMode",mode));JSONObject summary=response.optJSONObject("session");if(summary!=null){s.permissionMode=nullable(summary,"permissionMode");s.updatedAt=summary.optString("updatedAt",Instant.now().toString());db.saveSession(s);}}
+    private MoyuDatabase.SessionRecord sessionForConfiguration(String localId)throws Exception{MoyuDatabase.SessionRecord s=db.getSession(localId);if(s==null)throw new UiFailure("session_not_found","会话不存在",false);if("running".equals(s.state))throw new UiFailure("session_busy","当前回合运行中，完成或中断后再切换",false);if(activeNodeId==null||!activeNodeId.equals(s.nodeId))throw new UiFailure("wrong_node","请先连接该会话所属节点",true);if(s.remoteSessionId==null&&s.resumeRef!=null)resumeNativeSession(s);if(s.remoteSessionId==null)throw new UiFailure("session_not_found","远端会话不存在或已结束",false);return s;}
+    private void interrupt(String localId)throws Exception{requireOnline();MoyuDatabase.SessionRecord s=sessionRemote(localId);if(!AdapterCapabilityPolicy.supportsBoolean(serverView,s.kind,"interrupt"))throw new UiFailure("interrupt_unsupported","当前平台不支持中断",false);backend.post("/sessions/"+path(s.remoteSessionId)+"/interrupt",new JSONObject());}
     private void approval(JSONObject p)throws Exception{
         requireOnline();
         MoyuDatabase.SessionRecord s=sessionRemote(required(p,"localSessionId"));
         String approvalId=required(p,"approvalId");
-        Object decision=approvalDecision(p);
         String itemKey="approval:"+s.remoteSessionId+":"+approvalId;
+        JSONObject existing=db.timelineItem(itemKey);JSONObject storedApproval=existing==null?null:existing.optJSONObject("approval");
+        Object decision=approvalDecision(p,storedApproval==null?null:storedApproval.optJSONArray("choices"));
         if(!db.transitionApprovalState(s.localSessionId,itemKey,"pending","submitting"))throw new UiFailure("approval_not_pending","审批已不再等待",false);
         JSONObject msg=new JSONObject().put("type","approval").put("sessionId",s.remoteSessionId).put("approvalId",approvalId).put("decision",decision);
         boolean sent;
@@ -675,12 +718,17 @@ public final class AppCoordinator implements AutoCloseable {
     private JSONObject listFiles(JSONObject p)throws Exception{requireOnline();requireActiveNode(p);JSONArray files=backend.getArray("/fs/list?path="+query(p.optString("path",".")));JSONArray nodes=new JSONArray();for(int i=0;i<files.length();i++){JSONObject f=files.optJSONObject(i);if(f==null)continue;nodes.put(new JSONObject().put("nodeId",activeNodeId).put("name",f.optString("name")).put("path",f.optString("path")).put("kind",f.optBoolean("isDir")?"directory":"file"));}return new JSONObject().put("fileNodes",nodes);}
     private void activateAccount(JSONObject p)throws Exception{requireOnline();requireActiveNode(p);JSONObject rawAccounts=backend.post("/accounts/activate",new JSONObject().put("adapter",required(p,"adapter")).put("profileId",required(p,"profileId")));MoyuDatabase.NodeRecord n=db.getNode(activeNodeId);accountsView=mapAccounts(rawAccounts,serverView,n.nodeId);ControlViewMapper.applyActiveProfileModels(configView,accountsView);try{syncAllSessions(activeNodeId);}catch(Exception ignored){/* Account switch succeeded; history discovery remains additive. */}}
 
-    private void patchConfig(JSONObject p)throws Exception{requireOnline();requireActiveNode(p);JSONObject patch=p.optJSONObject("patch");if(patch==null)throw new UiFailure("bad_intent","缺少配置 patch",false);JSONObject remote=new JSONObject();String adapter=configView==null?"claude":configView.optString("defaultAdapter","claude");
-        if(patch.has("defaultAdapter")){remote.put("defaultAdapter",patch.optString("defaultAdapter"));adapter=patch.optString("defaultAdapter");}
-        JSONObject adapterPatch=new JSONObject();if(patch.has("model"))adapterPatch.put("model",patch.optString("model"));if(patch.has("sandbox"))adapterPatch.put("sandbox",patch.optString("sandbox"));if(patch.has("approvalsReviewer"))adapterPatch.put("approvalsReviewer",patch.optString("approvalsReviewer"));
-        if(patch.has("approvalPolicy")){String v=ControlViewMapper.validatedApprovalPolicy(patch.optString("approvalPolicy"));if(v==null)throw new UiFailure("bad_intent","Approval Policy 无效",false);adapterPatch.put("approvalPolicy",v);}
+    private void patchConfig(JSONObject p)throws Exception{requireOnline();requireActiveNode(p);JSONObject patch=p.optJSONObject("patch");if(patch==null)throw new UiFailure("bad_intent","缺少配置 patch",false);JSONObject remote=new JSONObject();String adapter=configView==null?null:emptyToNull(configView.optString("defaultAdapter","").trim());
+        if(patch.has("defaultAdapter")){adapter=required(patch,"defaultAdapter");if(AdapterCapabilityPolicy.adapter(serverView,adapter)==null)throw new UiFailure("adapter_unavailable","未知平台",false);remote.put("defaultAdapter",adapter);}
+        if(adapter==null)throw new UiFailure("adapter_unavailable","后端未提供默认平台",false);
+        JSONObject caps=AdapterCapabilityPolicy.capabilities(serverView,adapter);
+        JSONObject adapterPatch=new JSONObject();
+        if(patch.has("model")){if(!AdapterCapabilityPolicy.supportsModel(serverView,adapter))throw new UiFailure("unsupported_model","当前平台不支持模型配置",false);adapterPatch.put("model",patch.opt("model"));}
+        if(patch.has("sandbox")){String v=ControlViewMapper.validatedOption(patch.optString("sandbox"),caps==null?null:caps.optJSONArray("sandboxModes"));if(v==null)throw new UiFailure("bad_intent","Sandbox 无效",false);adapterPatch.put("sandbox",v);}
+        if(patch.has("approvalsReviewer")){String v=ControlViewMapper.validatedOption(patch.optString("approvalsReviewer"),caps==null?null:caps.optJSONArray("reviewers"));if(v==null)throw new UiFailure("bad_intent","Approvals Reviewer 无效",false);adapterPatch.put("approvalsReviewer",v);}
+        if(patch.has("approvalPolicy")){String v=ControlViewMapper.validatedOption(patch.optString("approvalPolicy"),caps==null?null:caps.optJSONArray("approvalPolicies"));if(v==null)throw new UiFailure("bad_intent","Approval Policy 无效",false);adapterPatch.put("approvalPolicy",v);}
         if(adapterPatch.length()>0)remote.put("adapters",new JSONObject().put(adapter,adapterPatch));JSONObject raw=backend.patch("/config",remote);configView=mapConfig(raw,serverView==null?new JSONObject():serverView);}
-    private void loadDiff(String localId)throws Exception{requireOnline();MoyuDatabase.SessionRecord s=sessionRemote(localId);if(!s.nodeId.equals(activeNodeId))throw new UiFailure("wrong_node","请先连接该会话所属节点",true);diffViews.put(localId,mapDiff(backend.getObject("/sessions/"+path(s.remoteSessionId)+"/diff")));}
+    private void loadDiff(String localId)throws Exception{requireOnline();MoyuDatabase.SessionRecord s=sessionRemote(localId);if(!s.nodeId.equals(activeNodeId))throw new UiFailure("wrong_node","请先连接该会话所属节点",true);if(!AdapterCapabilityPolicy.supportsBoolean(serverView,s.kind,"diff"))throw new UiFailure("diff_unsupported","当前平台不支持 Diff",false);diffViews.put(localId,mapDiff(backend.getObject("/sessions/"+path(s.remoteSessionId)+"/diff")));}
 
     private void diagnose(String nodeId)throws Exception{if(!nodeId.equals(activeNodeId)||backend==null)throw new UiFailure("node_offline","请先连接该节点再诊断",true);long t=SystemClock.elapsedRealtime();JSONObject status=backend.getObject("/net/status");phoneBackendRttMs=SystemClock.elapsedRealtime()-t;netView=status;MoyuDatabase.SessionRecord active=activeSessionId==null?null:db.getSession(activeSessionId);String suffix=active==null||!nodeId.equals(active.nodeId)||active.remoteSessionId==null?"":"?sessionId="+query(active.remoteSessionId);transportView=backend.getObject("/transport/metrics"+suffix);route="diagnostics";db.putSetting("route",route);}
 
@@ -823,10 +871,10 @@ public final class AppCoordinator implements AutoCloseable {
 
     private JSONObject connectionJson()throws Exception{JSONObject c=new JSONObject().put("state",connectionState).put("summary",connectionSummary);if(activeNodeId!=null)c.put("nodeId",activeNodeId);if(phoneBackendRttMs>=0)c.put("phoneBackendRttMs",phoneBackendRttMs);if(connectionErrorCode!=null)c.put("error",uiError(connectionErrorCode,connectionErrorSummary,false));return c;}
     private JSONObject nodeJson(MoyuDatabase.NodeRecord n)throws Exception{boolean active=n.nodeId.equals(activeNodeId);JSONObject out=new JSONObject().put("nodeId",n.nodeId).put("displayName",n.displayName).put("relayNode",n.relayNode).put("configured",isConfigured(n)).put("active",active).put("overlayState",active?overlayState:"idle").put("backendState",active&&online?"online":active&&"failed".equals(overlayState)?"offline":"unknown").put("syncState",active?syncState:"idle").put("peerConnected",active&&overlayPeerConnected).put("linkMode",active?overlayLinkMode:"unknown").put("lastConnectedAt",n.lastConnectedAt==null?JSONObject.NULL:n.lastConnectedAt).put("secretState",new JSONObject().put("token",secrets.has(n.nodeId,"token")).put("networkSecret",secrets.has(n.nodeId,"networkSecret")));if(active&&overlayLinkObservedAt!=null)out.put("linkObservedAt",overlayLinkObservedAt);return out;}
-    private JSONObject sessionJson(MoyuDatabase.SessionRecord s)throws Exception{JSONObject o=new JSONObject().put("localSessionId",s.localSessionId).put("nodeId",s.nodeId).put("kind",s.kind).put("title",s.title).put("updatedAt",s.updatedAt).put("state",s.state).put("unread",s.unread).put("lastSeq",s.lastSeq);if(s.remoteSessionId!=null)o.put("remoteSessionId",s.remoteSessionId);if(s.nativeSessionId!=null)o.put("nativeSessionId",s.nativeSessionId).put("resumable",true).put("nativeMessageCount",s.nativeMessageCount).put("nativeCachedMessages",s.nativeCachedSeq).put("nativeCacheComplete",s.nativeCachedSeq>=s.nativeMessageCount);if(s.profileId!=null)o.put("profileId",s.profileId);if(s.model!=null)o.put("model",s.model);if(s.effort!=null)o.put("effort",s.effort);if(s.permissionMode!=null)o.put("permissionMode",s.permissionMode);if(s.preview!=null&&!s.preview.isEmpty())o.put("preview",s.preview);return o;}
-    private JSONObject sessionDetail(MoyuDatabase.SessionRecord s)throws Exception{JSONObject o=sessionJson(s);if(s.cwd!=null)o.put("cwd",s.cwd);int limit=historyLimits.getOrDefault(s.localSessionId,200);JSONArray timeline=db.timeline(s.localSessionId,limit);boolean sameOnlineNode=online&&activeNodeId!=null&&activeNodeId.equals(s.nodeId);o.put("messages",timeline).put("hasOlderLocalMessages",timeline.length()>=limit).put("composerDraft",s.draft==null?"":s.draft).put("composerAttachments",new JSONArray(pendingAttachments.getOrDefault(s.localSessionId,new ArrayList<>()))).put("canSend",sameOnlineNode&&!"running".equals(s.state)&&(s.remoteSessionId!=null||s.nativeSessionId!=null)).put("canInterrupt",sameOnlineNode&&"running".equals(s.state));JSONObject adapter=serverView==null?null:findAdapter(serverView.optJSONArray("adapters"),s.kind);JSONObject caps=adapter==null?null:adapter.optJSONObject("capabilities");o.put("effortLevels",caps==null?new JSONArray():caps.optJSONArray("effortLevels")).put("permissionModes",caps==null?new JSONArray():caps.optJSONArray("permissionModes"));for(int i=timeline.length()-1;i>=0;i--){JSONObject item=timeline.optJSONObject(i);if(item!=null&&"approval".equals(item.optString("kind"))){JSONObject a=item.optJSONObject("approval");if(a!=null&&("pending".equals(a.optString("state"))||"submitting".equals(a.optString("state")))){o.put("pendingApproval",a);break;}}}JSONObject transport=transportMetrics();if(transport.length()>0)o.put("transport",transport);JSONObject diff=diffViews.get(s.localSessionId);if(diff!=null)o.put("diff",diff);return o;}
+    private JSONObject sessionJson(MoyuDatabase.SessionRecord s)throws Exception{JSONObject o=new JSONObject().put("localSessionId",s.localSessionId).put("nodeId",s.nodeId).put("kind",s.kind).put("title",s.title).put("updatedAt",s.updatedAt).put("state",s.state).put("unread",s.unread).put("lastSeq",s.lastSeq);if(s.remoteSessionId!=null)o.put("remoteSessionId",s.remoteSessionId);String resumeRef=AdapterCapabilityPolicy.validResumeRef(s.resumeRef);if(resumeRef!=null)o.put("resumeRef",resumeRef).put("nativeSessionId",resumeRef).put("resumable",AdapterCapabilityPolicy.supportsHistory(serverView,s.kind,"resume")).put("historyMessageCount",s.nativeMessageCount).put("historyCachedMessages",s.nativeCachedSeq).put("historyCacheComplete",s.nativeCachedSeq>=s.nativeMessageCount).put("nativeMessageCount",s.nativeMessageCount).put("nativeCachedMessages",s.nativeCachedSeq).put("nativeCacheComplete",s.nativeCachedSeq>=s.nativeMessageCount);else o.put("resumable",false);if(s.profileId!=null)o.put("profileId",s.profileId);if(s.model!=null)o.put("model",s.model);if(s.effort!=null)o.put("effort",s.effort);if(s.permissionMode!=null)o.put("permissionMode",s.permissionMode);if(s.preview!=null&&!s.preview.isEmpty())o.put("preview",s.preview);return o;}
+    private JSONObject sessionDetail(MoyuDatabase.SessionRecord s)throws Exception{JSONObject o=sessionJson(s);if(s.cwd!=null)o.put("cwd",s.cwd);int limit=historyLimits.getOrDefault(s.localSessionId,200);JSONArray timeline=db.timeline(s.localSessionId,limit);boolean sameOnlineNode=online&&activeNodeId!=null&&activeNodeId.equals(s.nodeId);boolean available=AdapterCapabilityPolicy.isAvailable(serverView,s.kind);boolean canResume=s.resumeRef!=null&&AdapterCapabilityPolicy.supportsHistory(serverView,s.kind,"resume");boolean canSend=sameOnlineNode&&available&&!"running".equals(s.state)&&(s.remoteSessionId!=null||canResume);boolean canInterrupt=sameOnlineNode&&available&&s.remoteSessionId!=null&&"running".equals(s.state)&&AdapterCapabilityPolicy.supportsBoolean(serverView,s.kind,"interrupt");JSONObject caps=AdapterCapabilityPolicy.capabilities(serverView,s.kind);JSONArray effortLevels=caps==null||caps.optJSONArray("effortLevels")==null?new JSONArray():new JSONArray(caps.optJSONArray("effortLevels").toString());JSONArray permissionModes=caps==null||caps.optJSONArray("permissionModes")==null?new JSONArray():new JSONArray(caps.optJSONArray("permissionModes").toString());JSONArray approvalChoices=caps==null||caps.optJSONArray("approvalChoices")==null?new JSONArray():new JSONArray(caps.optJSONArray("approvalChoices").toString());int maxAttachments=AdapterCapabilityPolicy.maxAttachments(serverView,s.kind);o.put("messages",timeline).put("hasOlderLocalMessages",timeline.length()>=limit).put("composerDraft",s.draft==null?"":s.draft).put("composerAttachments",new JSONArray(pendingAttachments.getOrDefault(s.localSessionId,new ArrayList<>()))).put("canSend",canSend).put("canInterrupt",canInterrupt).put("canSetModel",available&&AdapterCapabilityPolicy.supportsModel(serverView,s.kind)).put("canAttach",available&&maxAttachments>0).put("maxAttachments",maxAttachments).put("effortLevels",effortLevels).put("permissionModes",permissionModes).put("approvalChoices",approvalChoices);if(caps!=null){o.put("adapterCapabilities",new JSONObject(caps.toString()));JSONObject runtime=caps.optJSONObject("runtime");if(runtime!=null)o.put("runtime",new JSONObject(runtime.toString()));JSONObject attachments=caps.optJSONObject("attachments");if(attachments!=null)o.put("attachments",new JSONObject(attachments.toString()));}for(int i=timeline.length()-1;i>=0;i--){JSONObject item=timeline.optJSONObject(i);if(item!=null&&"approval".equals(item.optString("kind"))){JSONObject a=item.optJSONObject("approval");if(a!=null&&("pending".equals(a.optString("state"))||"submitting".equals(a.optString("state")))){o.put("pendingApproval",a);break;}}}JSONObject transport=transportMetrics();if(transport.length()>0)o.put("transport",transport);JSONObject diff=diffViews.get(s.localSessionId);if(diff!=null)o.put("diff",diff);return o;}
     private JSONObject findAdapter(JSONArray adapters,String kind){if(adapters==null)return null;for(int i=0;i<adapters.length();i++){JSONObject a=adapters.optJSONObject(i);if(a!=null&&kind.equals(a.optString("adapter")))return a;}return null;}
-    private JSONObject diagnosticsJson()throws Exception{JSONObject diagnostics=new JSONObject().put("net",netView==null?JSONObject.NULL:netView).put("transport",transportMetrics()).put("backendVersion",serverView==null?JSONObject.NULL:serverView.optString("version")).put("protocolVersion",1).put("notes",new JSONArray().put("手机↔后端 RTT 由 Android native client 测量。").put("PC↔relay TCP 只在后端提供时显示，不能代表 Provider 延迟。"));if(lastSyncAt!=null)diagnostics.put("lastSyncAt",lastSyncAt);return diagnostics;}
+    private JSONObject diagnosticsJson()throws Exception{JSONObject diagnostics=new JSONObject().put("net",netView==null?JSONObject.NULL:netView).put("transport",transportMetrics()).put("backendVersion",serverView==null?JSONObject.NULL:serverView.optString("version",null)).put("protocolVersion",serverView!=null&&serverView.has("protocolVersion")?serverView.opt("protocolVersion"):JSONObject.NULL).put("notes",new JSONArray().put("手机↔后端 RTT 由 Android native client 测量。").put("PC↔relay TCP 只在后端提供时显示，不能代表 Provider 延迟。"));if(lastSyncAt!=null)diagnostics.put("lastSyncAt",lastSyncAt);return diagnostics;}
     private void markSynced(){lastSyncAt=Instant.now().toString();db.putSetting("lastSyncAt",lastSyncAt);}
     private JSONObject transportMetrics()throws Exception{JSONObject t=new JSONObject();if(phoneBackendRttMs>=0)t.put("phoneBackendRttMs",phoneBackendRttMs);if(transportView!=null){JSONObject session=transportView.optJSONObject("session");JSONObject src=session==null?transportView:session;for(String k:new String[]{"backendCliQueueMs","backendCliDispatchMs","cliFirstEventMs","relayLatencyMs","observedAt"})if(src.has(k)&&src.opt(k)!=JSONObject.NULL)t.put(k,src.opt(k));JSONObject relay=transportView.optJSONObject("relay");if(relay!=null&&relay.has("latencyMs")&&relay.opt("latencyMs")!=JSONObject.NULL)t.put("relayLatencyMs",relay.opt("latencyMs"));}return t;}
 
@@ -851,10 +899,11 @@ public final class AppCoordinator implements AutoCloseable {
     private static String mapTurnState(String v){if("running".equals(v)||"completed".equals(v)||"failed".equals(v))return v;return "idle";}
     private static String category(String code){if(code==null)return"unknown";if(code.contains("auth")||"unauthorized".equals(code))return"auth";if(code.contains("network")||code.contains("overlay")||code.contains("node"))return"network";if(code.contains("not_found"))return"not-found";if(code.contains("queue")||code.contains("rate"))return"rate-limit";if(code.contains("parse")||code.contains("response"))return"parse";return"unknown";}
     private static String required(JSONObject o,String key)throws UiFailure{String v=o.optString(key,"").trim();if(v.isEmpty())throw new UiFailure("bad_intent","缺少 "+key,false);return v;}
-    private static Object approvalDecision(JSONObject payload)throws UiFailure{
+    private static Object approvalDecision(JSONObject payload,JSONArray allowedChoices)throws UiFailure{
         Object decision=payload.opt("decision");
-        if(decision instanceof String&&((String)decision).matches("allow|allow_session|deny|cancel"))return decision;
+        if(decision instanceof String&&contains(allowedChoices,(String)decision))return decision;
         if(!(decision instanceof JSONObject))throw new UiFailure("bad_intent","审批决定无效",false);
+        if(!contains(allowedChoices,"allow"))throw new UiFailure("bad_intent","当前审批不允许修改后放行",false);
         JSONObject wrapper=(JSONObject)decision;JSONObject modification=wrapper.optJSONObject("allowWithModification");
         if(wrapper.length()!=1||modification==null||modification.length()!=1)throw new UiFailure("bad_intent","结构化审批决定无效",false);
         JSONObject answers=modification.optJSONObject("answers");if(answers==null||answers.length()<1||answers.length()>4)throw new UiFailure("bad_intent","回答数量无效",false);
@@ -866,6 +915,7 @@ public final class AppCoordinator implements AutoCloseable {
         }
         return wrapper;
     }
+    private static boolean contains(JSONArray values,String expected){if(values==null||expected==null)return false;for(int i=0;i<values.length();i++)if(expected.equals(values.optString(i)))return true;return false;}
     private static String nullable(JSONObject o,String key){if(!o.has(key)||o.isNull(key))return null;String v=o.optString(key,null);return emptyToNull(v);}
     private static String emptyToNull(String v){return v==null||v.isEmpty()?null:v;}
     private static String valueOrEmpty(String v){return v==null?"":v;}
@@ -875,6 +925,8 @@ public final class AppCoordinator implements AutoCloseable {
     private static int count(JSONArray a){return a==null?0:a.length();}
     private static boolean validIpLike(String v){return v!=null&&v.matches("[0-9a-fA-F:.]{2,64}");}
     private static String safe(String v){if(v==null||v.isEmpty())return"操作失败";return v.length()>240?v.substring(0,240):v;}
+    private static String shortRef(String value){if(value==null)return"";int end=value.offsetByCodePoints(0,Math.min(8,value.codePointCount(0,value.length())));return value.substring(0,end);}
+    static boolean compatibleUiVersion(String uiVersion,String hostVersion){if(uiVersion==null||hostVersion==null)return false;if(uiVersion.equals(hostVersion))return true;String suffix="-localtest";return hostVersion.endsWith(suffix)&&uiVersion.equals(hostVersion.substring(0,hostVersion.length()-suffix.length()));}
 
     private static final class LiveStream{final String createdAt;final StringBuilder text=new StringBuilder();LiveStream(String createdAt){this.createdAt=createdAt;}}
     private static final class UiFailure extends Exception{final String code;final boolean retryable;UiFailure(String code,String summary,boolean retryable){super(summary);this.code=code;this.retryable=retryable;}}

@@ -26,6 +26,7 @@ public final class AppCoordinatorStreamProjectionTest {
     private AppCoordinator coordinator;
     private MoyuDatabase.SessionRecord session;
     private Method processEvent;
+    private Method persistCanonicalMessage;
 
     @Before public void setUp() throws Exception {
         app = (MoyuApplication) RuntimeEnvironment.getApplication();
@@ -46,7 +47,7 @@ public final class AppCoordinatorStreamProjectionTest {
         session.localSessionId = "local-" + suffix;
         session.remoteSessionId = "remote-" + suffix;
         session.nodeId = node.nodeId;
-        session.kind = "claude";
+        session.kind = "opencode";
         session.title = "Stream";
         session.state = "idle";
         session.updatedAt = "2026-01-01T00:00:00Z";
@@ -56,6 +57,8 @@ public final class AppCoordinatorStreamProjectionTest {
         coordinator = new AppCoordinator(app, new NoOpHost(app));
         processEvent = AppCoordinator.class.getDeclaredMethod("processEventEnvelope", JSONObject.class, boolean.class);
         processEvent.setAccessible(true);
+        persistCanonicalMessage = AppCoordinator.class.getDeclaredMethod("persistCanonicalMessage", MoyuDatabase.SessionRecord.class, JSONObject.class);
+        persistCanonicalMessage.setAccessible(true);
     }
 
     @After public void tearDown() {
@@ -98,9 +101,40 @@ public final class AppCoordinatorStreamProjectionTest {
         assertNotEquals(turnStartedAt, app.database().getSession(session.localSessionId).updatedAt);
     }
 
+    @Test public void messageUpsertAndRestReconcileShareOneStableSourceRow() throws Exception {
+        String sourceId = "shared/project:message-42";
+        JSONObject first = new JSONObject().put("sourceId", sourceId).put("role", "assistant")
+                .put("text", "first projection").put("createdAt", "2026-08-21T00:00:00Z");
+        projectMessage(1, first);
+
+        JSONObject firstRow = app.database().timeline(session.localSessionId, 20).getJSONObject(0);
+        int localSeq = firstRow.getInt("localSeq");
+        assertEquals(sourceId, firstRow.getString("sourceId"));
+
+        JSONObject reconciled = new JSONObject(first.toString()).put("seq", 1).put("text", "REST reconciliation");
+        persistCanonicalMessage.invoke(coordinator, app.database().getSession(session.localSessionId), reconciled);
+        JSONObject restRow = app.database().timeline(session.localSessionId, 20).getJSONObject(0);
+        assertEquals(1, app.database().timeline(session.localSessionId, 20).length());
+        assertEquals(localSeq, restRow.getInt("localSeq"));
+        assertEquals("REST reconciliation", restRow.getString("text"));
+
+        projectMessage(2, new JSONObject(first.toString()).put("text", "WS final projection"));
+        JSONObject finalRow = app.database().timeline(session.localSessionId, 20).getJSONObject(0);
+        assertEquals(1, app.database().timeline(session.localSessionId, 20).length());
+        assertEquals(localSeq, finalRow.getInt("localSeq"));
+        assertEquals("WS final projection", finalRow.getString("text"));
+        assertEquals(sourceId, finalRow.getString("sourceId"));
+    }
+
     private void project(int seq, String type, String text) throws Exception {
         JSONObject event = new JSONObject().put("type", type);
         if (text != null) event.put("text", text);
+        JSONObject envelope = new JSONObject().put("seq", seq).put("sessionId", session.remoteSessionId).put("event", event);
+        processEvent.invoke(coordinator, envelope, false);
+    }
+
+    private void projectMessage(int seq, JSONObject message) throws Exception {
+        JSONObject event = new JSONObject().put("type", "message.upsert").put("message", message);
         JSONObject envelope = new JSONObject().put("seq", seq).put("sessionId", session.remoteSessionId).put("event", event);
         processEvent.invoke(coordinator, envelope, false);
     }

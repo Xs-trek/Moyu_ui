@@ -1,19 +1,17 @@
 package com.moyu.remote;
 
-/** Decides when a live summary's CLI reference is authoritative enough to persist as native identity. */
+/** Opaque adapter-owned resume identity and live/history row merge rules. */
 final class NativeHistoryIdentity {
     private NativeHistoryIdentity() { }
 
-    static boolean shouldBind(String kind, String remoteSessionId, String cliSessionRef, boolean nativeRowExists) {
-        if (!ArtifactCache.isValidId(cliSessionRef)) return false;
-        if ("claude".equals(kind) || nativeRowExists) return true;
-        // A fresh Codex handle uses the backend id only until thread.started supplies the real thread id.
-        return "codex".equals(kind) && !cliSessionRef.equals(remoteSessionId);
+    static boolean shouldBind(String resumeRef) {
+        return AdapterCapabilityPolicy.validResumeRef(resumeRef) != null;
     }
 
     /** Keeps the native row's stable local identity/cache while adopting live-only state. */
     static void mergeLiveState(MoyuDatabase.SessionRecord nativeRow, MoyuDatabase.SessionRecord liveRow) {
         nativeRow.remoteSessionId = liveRow.remoteSessionId;
+        if (nativeRow.resumeRef == null) nativeRow.resumeRef = liveRow.resumeRef;
         nativeRow.lastSeq = liveRow.lastSeq;
         nativeRow.unread = Math.max(nativeRow.unread, liveRow.unread);
         if (liveRow.draft != null && !liveRow.draft.isEmpty()) nativeRow.draft = liveRow.draft;

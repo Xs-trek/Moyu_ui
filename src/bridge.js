@@ -1,4 +1,5 @@
 import { applyViewPatch, getState, replaceView, setNotice, update } from './state.js';
+import { PROTOCOL_VERSION, UI_VERSION } from './version.js';
 
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
@@ -20,7 +21,7 @@ export function sendIntent(type, payload = {}, options = {}) {
     if (existing) return existing;
   }
   const id = requestId();
-  const intent = { version: 1, type, requestId: id, payload };
+  const intent = { version: PROTOCOL_VERSION, type, requestId: id, payload };
   const message = JSON.stringify(intent);
   if (encoder.encode(message).byteLength > MAX_MESSAGE_BYTES) {
     setNotice('内容过大，未发送', { level: 'error' });
@@ -52,7 +53,7 @@ function reloadView() { sendIntent('view.reload', {}); }
 
 function onEnvelope(event) {
   const envelope = event.detail;
-  if (!envelope || envelope.version !== 1 || typeof envelope.type !== 'string') return;
+  if (!envelope || envelope.version !== PROTOCOL_VERSION || typeof envelope.type !== 'string') return;
   const current = getState();
   if (envelope.type === 'view.full') {
     if (!Number.isSafeInteger(envelope.revision) || envelope.revision <= current.revision
@@ -103,6 +104,11 @@ export function errorMessage(error) {
     pty_not_available: '当前环境无法启动 CLI',
     profile_unavailable: '所选账号配置已失效，请刷新账号后重新选择',
     unsupported_effort: '当前平台不支持所选推理深度',
+    unsupported_model: '当前平台不支持会话模型切换',
+    unsupported_permission_mode: '当前平台不支持所选权限模式',
+    history_unsupported: '当前平台不支持历史读取',
+    resume_unsupported: '当前平台不支持恢复该会话',
+    protocol_mismatch: '前后端协议版本不兼容，请同步升级 Moyu',
     invalid_artifact: '图片结构无效，或无法安全清除设备元数据',
     unsupported_artifact_type: '仅支持 PNG、JPEG、GIF 或 WebP 图片',
     artifact_too_large: '图片超过 8 MiB 限制',
@@ -115,5 +121,5 @@ export function errorMessage(error) {
 
 export function initBridge() {
   window.addEventListener('moyu:view', onEnvelope);
-  sendIntent('app.ready', { uiVersion: '0.0.3' });
+  sendIntent('app.ready', { uiVersion: UI_VERSION });
 }

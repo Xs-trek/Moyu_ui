@@ -1,4 +1,4 @@
-# Moyu Android v0.0.3 integration
+# Moyu Android v0.0.4 integration
 
 This project keeps the HTML presentation layer separate from Android glue:
 
@@ -10,7 +10,8 @@ This project keeps the HTML presentation layer separate from Android glue:
 ## Supported package
 
 - Application id: `com.moyu.remote`
-- Version: `0.0.3` (`versionCode 3`)
+- Version: `0.0.4` (`versionCode 4`)
+- Runtime projection: Claude Code, Codex and OpenCode are rendered from backend adapter capabilities; OpenCode control stays on the PC-local official Server REST/SSE path and does not make Android a provider client.
 - Claude session controls: `session.permissionMode.set` exposes only `plan`, `auto`, `acceptEdits`; `session.model.set` changes subsequent turns only. Both are rejected while a turn is running.
 - Timeline compatibility: the native cache removes legacy `[approval:*]` / `[error:*]` system duplicates and keeps structured approval/error cards as the sole source of truth.
 - Minimum Android: 8.0 / API 26

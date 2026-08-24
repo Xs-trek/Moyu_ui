@@ -3,7 +3,7 @@ export type Theme = 'system' | 'light' | 'dark';
 export type Route = 'console' | 'conversation' | 'sessions' | 'nodes' | 'accounts' | 'settings' | 'diagnostics';
 export type ApprovalChoice = 'allow' | 'allow_session' | 'deny' | 'cancel';
 export type ApprovalDecision = ApprovalChoice | { allowWithModification: { answers: Record<string, string | string[]> } };
-export type AdapterId = 'claude' | 'codex';
+export type AdapterId = 'claude' | 'codex' | 'opencode';
 
 export interface UiIntent<T extends string = string, P = unknown> {
   version: 1;
@@ -129,8 +129,15 @@ export interface NodeView {
 export interface LocalSessionView {
   localSessionId: string;
   remoteSessionId?: string;
+  /** Adapter-owned opaque resume reference. Never assume UUID syntax. */
+  resumeRef?: string;
+  /** @deprecated Legacy alias accepted while v0.0.3 caches migrate. */
   nativeSessionId?: string;
   resumable?: boolean;
+  historyMessageCount?: number;
+  historyCachedMessages?: number;
+  historyCacheComplete?: boolean;
+  /** @deprecated Legacy history counters accepted while v0.0.3 caches migrate. */
   nativeMessageCount?: number;
   nativeCachedMessages?: number;
   nativeCacheComplete?: boolean;
@@ -161,6 +168,14 @@ export interface SessionDetailView extends LocalSessionView {
   canInterrupt: boolean;
   effortLevels: string[];
   permissionModes: PermissionMode[];
+  /** Active adapter capabilities projected by the Host when available. */
+  adapterCapabilities?: AdapterCapabilities;
+  /** Flattened compatibility projection used by the current Android mapper. */
+  runtime?: AdapterCapabilities['runtime'];
+  attachments?: AdapterCapabilities['attachments'];
+  canSetModel?: boolean;
+  canAttach?: boolean;
+  maxAttachments?: number;
   pendingApproval?: ApprovalView;
   transport?: TransportMetricsView;
   diff?: DiffView;
@@ -245,6 +260,13 @@ export interface AdapterCapabilities {
   reviewers: Array<'auto_review' | 'user' | 'guardian_subagent'>;
   approvalPolicies: Array<'untrusted' | 'on-failure' | 'on-request' | 'never'>;
   approvalChoices: ApprovalChoice[];
+  /** Preferred v0.0.4 approval declaration; approvalChoices remains a flattened compatibility field. */
+  approval?: { choices: ApprovalChoice[] };
+  history?: boolean | { list: boolean; messages: boolean; resume: boolean };
+  runtime?: { source: 'native-cli' | 'local-server'; shared: boolean };
+  attachments?: { images: boolean; maxCount: number };
+  /** @deprecated Compatibility alias for early capability projections. */
+  images?: boolean;
   description?: string;
   diff?: boolean;
   interrupt?: boolean;
@@ -259,6 +281,12 @@ export interface AdapterStatus {
   displayName: string;
   available: boolean;
   unavailableReason?: string;
+  compatibility?: {
+    state: 'compatible' | 'incompatible' | 'unavailable' | 'unknown';
+    protocol: string;
+    version?: string;
+    reason?: string;
+  };
   capabilities: AdapterCapabilities;
   /** Profile-local native default and final default are read from PC config only. */
   cliDefaultModel?: string;

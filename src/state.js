@@ -8,7 +8,7 @@ const initial = {
   route: 'console',
   modal: null,
   filters: { query: '', node: 'all', kind: 'all', state: 'all' },
-  createDraft: { nodeId: '', kind: 'claude', cwd: '', title: '', profileId: '', model: '', effort: '', permissionMode: 'acceptEdits' },
+  createDraft: { nodeId: '', kind: '', cwd: '', title: '', profileId: '', model: '', effort: '', permissionMode: '' },
   conversationOutlineOpen: false,
   conversationSidebarTab: 'outline',
   conversationScrollTop: 0,

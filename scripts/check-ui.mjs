@@ -40,15 +40,20 @@ const nativeHistoryKeysSource = await readFile(join(rootPath, 'android', 'app', 
 const nativeHistoryPagingSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'NativeHistoryPaging.java'), 'utf8');
 const nativeHistoryIdentitySource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'NativeHistoryIdentity.java'), 'utf8');
 const nativeHistoryRetentionSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'NativeHistoryRetention.java'), 'utf8');
+const adapterCapabilityPolicySource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'AdapterCapabilityPolicy.java'), 'utf8');
 const approvalInputSource = await readFile(join(rootPath, 'src', 'approval-input.js'), 'utf8');
 const { conversationSegments } = await import(new URL('../src/conversation-outline.js', import.meta.url));
 const { modelSuggestions } = await import(new URL('../src/model-options.js', import.meta.url));
+const { attachmentCapability, canSelectModel, historyCapability, platformMeta } = await import(new URL('../src/platform-meta.js', import.meta.url));
 const { turnPerformanceLabels } = await import(new URL('../src/turn-performance.js', import.meta.url));
 const contractSource = await readFile(join(rootPath, 'contract', 'moyu-ui-contract.d.ts'), 'utf8');
+const packageJson = JSON.parse(await readFile(join(rootPath, 'package.json'), 'utf8'));
+const { PROTOCOL_VERSION, UI_VERSION } = await import(new URL('../src/version.js', import.meta.url));
 const overlaySource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'OverlayService.java'), 'utf8');
 const linkInfoSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'EasyTierLinkInfo.java'), 'utf8');
 const jniSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'easytier', 'jni', 'EasyTierJNI.java'), 'utf8');
 const brandSvg = await readFile(join(rootPath, 'public', 'assets', 'brands', 'moyu.svg'), 'utf8');
+const openCodeSvg = await readFile(join(rootPath, 'public', 'assets', 'brands', 'opencode.svg'), 'utf8');
 const notificationPng = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'res', 'drawable-xxxhdpi', 'ic_notification.png'));
 const viewEmissionPolicySource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'ViewEmissionPolicy.java'), 'utf8');
 const viewEmissionThrottleSource = await readFile(join(rootPath, 'android', 'app', 'src', 'main', 'java', 'com', 'moyu', 'remote', 'ViewEmissionThrottle.java'), 'utf8');
@@ -58,6 +63,9 @@ const forbiddenNetwork = ['fe' + 'tch\\s*\\(', 'XML' + 'HttpRequest', 'Web' + 'S
 const forbiddenStorage = ['local' + 'Storage', 'session' + 'Storage', 'Indexed' + 'DB'];
 check(forbiddenNetwork.every((pattern) => !new RegExp(pattern).test(source)), '无禁止的网络 API');
 check(forbiddenStorage.every((pattern) => !source.includes(pattern)), '无禁止的持久化 API');
+check(UI_VERSION === packageJson.version && PROTOCOL_VERSION === 1
+  && !/0\.0\.\d+/.test(renderSource)
+  && source.includes('uiVersion: UI_VERSION'), 'UI/package/协议版本来自单一常量源');
 check(!/(?:https?:)?\/\//i.test(source + index + preview), '无远程 URL 或协议相对资源');
 check(!/\son[a-z]+\s*=/i.test(index + preview), '无内联事件处理器');
 check(!/\beval\s*\(|new\s+Function\b/.test(source), '无动态代码执行');
@@ -162,11 +170,43 @@ check(renderSource.includes("'session.permissionMode.set'") && renderSource.incl
   && coordinatorSource.includes('"running".equals(s.state)') && coordinatorSource.includes('/permission-mode') && coordinatorSource.includes('/model'), 'Claude 会话仅暴露 Plan/Auto/Accept Edits，模型与模式由用户在空闲时手动切换');
 check(renderSource.includes('if (!matches.length) { palette.hidden = true')
   && renderSource.includes('if (slashOption) { slashOption.click(); return; }'), '未知或自定义 CLI slash 不会被本地预索引吞掉 Enter');
-check(renderSource.includes("'./assets/brands/anthropic.svg'")
-  && renderSource.includes("'./assets/brands/openai.svg'")
+check(source.includes("'./assets/brands/anthropic.svg'")
+  && source.includes("'./assets/brands/openai.svg'")
+  && source.includes("'./assets/brands/opencode.svg'")
+  && openCodeSvg.includes('<title id="title">OpenCode</title>')
   && source.includes('.provider-glyph img')
   && existsSync(join(rootPath, 'public/assets/brands/anthropic.svg'))
-  && existsSync(join(rootPath, 'public/assets/brands/openai.svg')), '会话平台使用随包分发的真实 Claude Code/Codex CLI 图标');
+  && existsSync(join(rootPath, 'public/assets/brands/openai.svg'))
+  && existsSync(join(rootPath, 'public/assets/brands/opencode.svg')), '三平台使用随包分发的真实本地图标');
+const unknownMeta = platformMeta('future-cli', 'Future Runtime');
+const openCodeMeta = platformMeta('opencode');
+check(openCodeMeta.icon === './assets/brands/opencode.svg' && openCodeMeta.displayName === 'OpenCode'
+  && unknownMeta.icon === null && unknownMeta.displayName === 'Future Runtime'
+  && source.includes("text: '◇'")
+  && !renderSource.includes("kind === 'claude'")
+  && !renderSource.includes("['claude', 'codex']"), '平台元数据集中管理，未知平台通用回退且不伪装成 Codex');
+check(contractSource.includes("export type AdapterId = 'claude' | 'codex' | 'opencode'")
+  && contractSource.includes('resumeRef?: string;')
+  && contractSource.includes("source: 'native-cli' | 'local-server'")
+  && contractSource.includes('attachments?: { images: boolean; maxCount: number }'), 'v0.0.4 Adapter/runtime/history/attachment UI contract 对齐');
+check(contractSource.includes("state: 'compatible' | 'incompatible' | 'unavailable' | 'unknown'")
+  && renderSource.includes("adapter.unavailableReason || adapter.compatibility?.reason")
+  && renderSource.includes('disabled: disabled || !adapter.available')
+  && renderSource.includes("adapterList(view, { availableOnly: true })"), '版本/协议不兼容状态可见且不得创建会话');
+check(canSelectModel({ models: true, modelSelection: 'freeform' })
+  && !canSelectModel({ models: true, modelSelection: 'none' })
+  && attachmentCapability({ attachments: { images: true, maxCount: 2 } }).maxCount === 2
+  && historyCapability({ history: { list: true, messages: true, resume: false } }).messages
+  && renderSource.includes('modelSelectable ? button(`模型 ·')
+  && renderSource.includes('permissionModes.length ? choiceField')
+  && !/permissionModes[^\n]+open-session-model/.test(renderSource), '模型、模式、附件和历史按独立 capability 渲染');
+check(renderSource.includes('approval.choices.filter((choice) => approvalChoices.has(choice))')
+  && renderSource.includes("questions && choices.includes('allow')")
+  && renderSource.includes('审批请求未提供可用选项')
+  && !renderSource.includes('declaredApprovalChoices'), '审批操作严格使用当前请求 choices，不从平台元数据扩权');
+check(renderSource.includes('session?.resumeRef || session?.nativeSessionId')
+  && renderSource.includes('caps.history === undefined && legacyHistorySnapshot')
+  && renderSource.includes('运行时历史'), '历史使用不透明 resumeRef 并保留离线 legacy 缓存降级');
 check(renderSource.includes("action === 'toggle-output' || action === 'toggle-session-info'")
   && renderSource.includes("class: `session-summary ${sessionInfoOpen ? 'expanded' : ''}`")
   && source.includes('grid-template-rows: auto auto minmax(0, 1fr) auto')
@@ -187,7 +227,7 @@ check(renderSource.includes("dataset: { form: 'approval-questions'")
   && renderSource.includes("approval.tool === 'ExitPlanMode'")
   && askDecision.allowWithModification.answers['single?'] === 'B'
   && Array.isArray(askDecision.allowWithModification.answers['multi?'])
-  && coordinatorSource.includes('approvalDecision(p)')
+  && coordinatorSource.includes('approvalDecision(p,storedApproval==null?null:storedApproval.optJSONArray("choices"))')
   && coordinatorSource.includes('optJSONObject("allowWithModification")')
   && contractSource.includes('allowWithModification: { answers: Record<string, string | string[]> }'), 'AskUserQuestion 结构化回答与 ExitPlanMode 原生确认契约闭环');
 check(source.includes('item.costUsd') && source.includes('turn.costUsd')
@@ -278,24 +318,27 @@ check(databaseSource.includes('putCanonicalUserTimeline')
   && databaseSource.includes('canonicalText.equals(candidate.optString("text", ""))')
   && databaseSource.includes('WHERE session_id=? AND item_key=?')
   && coordinatorSource.includes('db.putCanonicalUserTimeline(session.localSessionId,key,seq,item)'), '本地 user pending 仅在同会话按键名/文本/最早序号归并到 canonical');
-check(databaseSource.includes('native_id TEXT') && databaseSource.includes('findNativeSession')
-  && coordinatorSource.includes('/native-sessions?limit=" + NativeHistoryPaging.PAGE_SIZE + "&offset=" + offset')
+check(databaseSource.includes('native_id TEXT') && databaseSource.includes('findResumeSession')
+  && coordinatorSource.includes('/history?limit=" + NativeHistoryPaging.PAGE_SIZE + "&offset=" + offset')
   && coordinatorSource.includes('snapshot.optInt("nextOffset", -1)')
   && nativeHistoryPagingSource.includes('serverNextOffset <= currentOffset')
-  && coordinatorSource.includes('/messages?after=')
-  && coordinatorSource.includes('/resume')
+  && coordinatorSource.includes('/history/" + path(session.kind) + "/" + path(session.resumeRef) + "/messages?after=')
+  && coordinatorSource.includes('/history/"+path(session.kind)+"/"+path(session.resumeRef)+"/resume')
+  && adapterCapabilityPolicySource.includes('supportsHistory(JSONObject server, String kind, String operation)')
+  && adapterCapabilityPolicySource.includes('for (String key : new String[]{"resumeRef", "nativeSessionId", "cliSessionRef"})')
+  && !/(?:claude|codex|opencode)/.test(adapterCapabilityPolicySource + nativeHistoryIdentitySource)
   && coordinatorSource.includes('completeNativePromotion')
   && databaseSource.includes('deleteTimelinePrefix')
   && nativeHistoryKeysSource.includes('"native:" + localSessionId')
-  && coordinatorSource.includes('db.findNativeSession(nodeId,kind,cliRef)')
-  && nativeHistoryIdentitySource.includes('nativeRowExists')
+  && coordinatorSource.includes('db.findResumeSession(nodeId, kind, resumeRef)')
+  && nativeHistoryIdentitySource.includes('shouldBind(String resumeRef)')
   && coordinatorSource.includes('db.mergeSessions(local,obsolete)')
   && databaseSource.includes('public synchronized void mergeSessions')
   && databaseSource.includes('db.beginTransaction()')
   && coordinatorSource.includes('messagesTruncatedBeforeSeq')
   && databaseSource.includes('deleteTimelinePrefixAfterRemoteSeq')
   && databaseSource.includes('remote_seq>?')
-  && nativeHistoryRetentionSource.includes('nativeSeq <= truncatedBeforeSeq'), '原生历史分页、live/native 对账及长历史离线保留均有界且按本地会话隔离');
+  && nativeHistoryRetentionSource.includes('nativeSeq <= truncatedBeforeSeq'), '通用 History 分页、resumeRef 对账及长历史离线保留均有界且按本地会话隔离');
 check(!coordinatorSource.includes('session.model=runtimeModel') && coordinatorSource.includes('meta.put("model",runtimeModel)')
   && renderSource.includes('本轮实际模型') && renderSource.includes('请求模型'), '请求模型与本轮实际模型分层显示，兼容端身份不会覆盖用户选择');
 check(source.includes("'attachment.pick'") && source.includes("'attachment.remove'")
@@ -325,8 +368,9 @@ check(coordinatorSource.includes('if(closed||!uiReady)return;')
 check(databaseSource.includes('transitionApprovalState')
   && coordinatorSource.includes('"pending","submitting"')
   && coordinatorSource.includes('"submitting","pending"'), '原生审批以持久化 submitting 状态防止重复提交并在发送失败时回滚');
-check(coordinatorSource.includes('sameOnlineNode&&!"running".equals(s.state)')
-  && coordinatorSource.includes('"session_busy"'), '运行中会话不可重复发送但仍可中断');
+check(coordinatorSource.includes('canSend=sameOnlineNode&&available&&!"running".equals(s.state)')
+  && coordinatorSource.includes('canInterrupt=sameOnlineNode&&available&&s.remoteSessionId!=null&&"running".equals(s.state)')
+  && coordinatorSource.includes('"session_busy"'), '运行中会话不可重复发送但仍可按 capability 中断');
 check(coordinatorSource.includes('disconnectNode(required(p, "nodeId"))')
   && coordinatorSource.includes('MoyuDatabase.NodeRecord node=db.getNode(nodeId)')
   && contractSource.includes("UiIntent<'node.manualSetup.open', { nodeId?: string }>")
@@ -376,8 +420,13 @@ check(source.includes('.session-list { grid-template-columns: minmax(0, 1fr); }'
 check(!/(?:api[_-]?key|bearer|oauth[_-]?token|networkSecret)\s*[:=]\s*['"][^'"]{8,}/i.test(source), '无可疑密钥字面量');
 
 const mockData = await readFile(join(rootPath, 'src', 'mock-data.js'), 'utf8');
+check(mockData.includes("approvalChoices: ['allow', 'allow_session', 'deny', 'cancel']")
+  && mockData.includes("attachments: { images: false, maxCount: 0 }"),
+  'OpenCode mock capabilities match backend approval and attachment contract');
 const fixtureCount = (mockData.match(/^\s*\['[a-z0-9-]+',\s*'\d{2}\s*·/gm) || []).length;
-check(fixtureCount === 33 && mockData.includes("['codex-long-title', '33 · Codex 长标题卡片'"), '包含 Codex 长标题在内的 33 组 fixture', `检测到 ${fixtureCount}`);
+check(fixtureCount === 35
+  && mockData.includes("['opencode-session', '34 · OpenCode 共享 Server'")
+  && mockData.includes("['unknown-adapter', '35 · 未知平台通用回退'"), '包含 OpenCode 与未知平台在内的 35 组 fixture', `检测到 ${fixtureCount}`);
 globalThis.matchMedia = () => ({ matches: false });
 const mockModule = await import(new URL('../src/mock-data.js', import.meta.url));
 let matrixValid = true;
@@ -399,7 +448,7 @@ for (const [id] of mockModule.fixtures) {
       && (fixtureView.activeSession?.state !== 'running' || fixtureView.activeSession.canSend === false);
   }
 }
-check(matrixValid, '33 fixtures × light/dark 数据矩阵有效', '66 个组合');
+check(matrixValid, '35 fixtures × light/dark 数据矩阵有效', '70 个组合');
 
 let distFiles = [];
 try { distFiles = await filesUnder(join(rootPath, 'dist')); } catch { /* build has not run */ }
@@ -411,6 +460,7 @@ check(source.includes('.device-frame {\n  box-sizing: content-box;')
   '手机画幅壳的标注尺寸等于 iframe 实际 CSS viewport');
 check(relDist.some((file) => file.startsWith('assets/')), 'dist 包含本地 assets');
 check(relDist.includes('assets/brands/moyu.svg'), 'dist 包含本地 Moyu 品牌资产');
+check(relDist.includes('assets/brands/opencode.svg'), 'dist 包含本地 OpenCode 官方品牌资产');
 check(androidBuildSource.includes("exclude 'preview.html'")
   && androidBuildSource.includes("exclude 'phone.html'")
   && androidBuildSource.includes("exclude 'assets/preview-*'")

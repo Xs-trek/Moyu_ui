@@ -27,3 +27,10 @@ with Claude Code and Codex CLI. Anthropic, Claude, OpenAI, Codex and their assoc
 belong to their respective owners. Their inclusion does not imply sponsorship, endorsement or
 affiliation. The assets were obtained from the respective official brand/press materials and
 are not granted for unrelated reuse by the Apache-2.0 software license.
+
+The local OpenCode SVG comes from anomalyco/opencode commit
+ad192a59b5517fb432bc5f4d27f131d605a22beb at
+packages/console/app/src/asset/brand/opencode-logo-light-square.svg. It is distributed under
+the upstream MIT License, Copyright (c) 2025 opencode; the complete text is packaged beside
+this file as OpenCode-MIT.txt. Moyu is not built by the OpenCode team and is not affiliated
+with it.

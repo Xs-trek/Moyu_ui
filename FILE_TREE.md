@@ -3,7 +3,7 @@
 以下为可交付源码、资源、文档与构建产物；不列出 `node_modules/`、`.git/`、Gradle `build/`/`.gradle/`、本机测试截图与既有后端二进制。
 
 ```text
-moyu-ui/
+moyu_ui/
 ├─ app-arm64-release.apk
 ├─ index.html
 ├─ preview.html
@@ -16,6 +16,7 @@ moyu-ui/
 ├─ README_UI.md
 ├─ UI_ACCEPTANCE.md
 ├─ V0.0.3_REQUIREMENTS.md
+├─ V0.0.4_REQUIREMENTS.md
 ├─ ANDROID_INTEGRATION.md
 ├─ LOCAL_INTEGRATION.md
 ├─ THIRD_PARTY_LICENSES.md
@@ -29,7 +30,8 @@ moyu-ui/
 │  └─ assets/brands/
 │     ├─ anthropic.svg
 │     ├─ moyu.svg
-│     └─ openai.svg
+│     ├─ openai.svg
+│     └─ opencode.svg
 ├─ src/
 │  ├─ accessibility.js
 │  ├─ approval-input.js
@@ -38,6 +40,7 @@ moyu-ui/
 │  ├─ main.js
 │  ├─ mock-data.js
 │  ├─ mock-host.js
+│  ├─ platform-meta.js
 │  ├─ model-options.js
 │  ├─ phone-preview.js
 │  ├─ render-gate.js
@@ -45,6 +48,7 @@ moyu-ui/
 │  ├─ router.js
 │  ├─ scroll-anchor.js
 │  ├─ state.js
+│  ├─ version.js
 │  ├─ turn-performance.js
 │  ├─ assets/
 │  │  ├─ icons/README.md
@@ -71,10 +75,10 @@ moyu-ui/
 │  ├─ preview.html
 │  ├─ phone.html
 │  └─ assets/
-│     ├─ brands/{anthropic.svg,moyu.svg,openai.svg}
-│     ├─ main-DPZ4TfJG.js
-│     ├─ main-Czuz5Vdp.css
-│     ├─ preview-DiXieeTt.js
+│     ├─ brands/{anthropic.svg,moyu.svg,openai.svg,opencode.svg}
+│     ├─ main-DMCp9aQw.js
+│     ├─ main-HIKpxZAc.css
+│     ├─ preview-Nbu_LQ9d.js
 │     ├─ phone-DNdXNNuf.js
 │     └─ phone-BDCaU-hj.css
 └─ android/
@@ -98,13 +102,14 @@ moyu-ui/
          │  │  │  ├─ Apache-2.0.txt
          │  │  │  ├─ EasyTier-LGPL-3.0.txt
          │  │  │  ├─ GPL-3.0.txt
+         │  │  │  ├─ OpenCode-MIT.txt
          │  │  │  └─ THIRD_PARTY_NOTICES.txt
          │  │  └─ ui/
          │  │     ├─ index.html
          │  │     └─ assets/
-         │  │        ├─ brands/{anthropic.svg,moyu.svg,openai.svg}
-         │  │        ├─ main-DPZ4TfJG.js
-         │  │        └─ main-Czuz5Vdp.css
+         │  │        ├─ brands/{anthropic.svg,moyu.svg,openai.svg,opencode.svg}
+         │  │        ├─ main-DMCp9aQw.js
+         │  │        └─ main-HIKpxZAc.css
          │  ├─ cpp/easytier_jni.c
          │  ├─ jniLibs/arm64-v8a/
          │  │  ├─ libeasytier_android_jni.so

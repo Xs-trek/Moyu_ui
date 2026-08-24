@@ -3,10 +3,12 @@ import { askUserDecision, askUserQuestions } from './approval-input.js';
 import { sendIntent } from './bridge.js';
 import { conversationSegments } from './conversation-outline.js';
 import { modelDisplay, modelSuggestions } from './model-options.js';
+import { adapterList, adapterStatus, attachmentCapability, canSelectModel, capabilityList, historyCapability, platformMeta } from './platform-meta.js';
 import { openRoute } from './router.js';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.js';
 import { cacheConversationOutline, cachePairDraft, dismissNotice, getState, setFilter, setFocusPanel, setModal, setNotice, toggleExpanded, update } from './state.js';
 import { turnPerformanceLabels } from './turn-performance.js';
+import { PROTOCOL_VERSION, UI_VERSION } from './version.js';
 
 const labels = {
   console: ['控制台', '▣'], sessions: ['会话', '☷'], nodes: ['节点', '◆'],
@@ -17,6 +19,7 @@ const statusClass = (state) => ['online'].includes(state) ? 'online' : ['syncing
 const sessionStateLabels = { localOnly: '仅本地', idle: '空闲', running: '运行中', completed: '已完成', failed: '失败', ended: '已结束' };
 const approvalStateLabels = { pending: '等待审批', submitting: '提交中', allowed: '已允许', denied: '已拒绝', expired: '已过期' };
 const permissionModeLabels = { plan: 'Plan', auto: 'Auto', acceptEdits: 'Accept Edits' };
+const approvalChoices = new Set(['allow', 'allow_session', 'deny', 'cancel']);
 const overlayStateLabels = { idle: '空闲', starting: '启动中', online: '在线', offline: '离线', error: '错误', unknown: '未知' };
 const backendStateLabels = { unknown: '未知', offline: '离线', online: '在线' };
 const syncStateLabels = { idle: '空闲', syncing: '同步中', current: '已同步', error: '错误' };
@@ -83,16 +86,43 @@ function badge(text, state) {
   return h('span', { class: 'badge' }, h('span', { class: `status-dot status-${statusClass(state)}`, 'aria-hidden': 'true' }), text);
 }
 
-function brandMark(kind, label = true) {
-  const claude = kind === 'claude';
-  const name = claude ? 'Claude Code' : 'Codex CLI';
-  const icon = claude ? './assets/brands/anthropic.svg' : './assets/brands/openai.svg';
-  return h('span', { class: `provider-mark provider-${claude ? 'claude' : 'codex'}`, role: 'img', 'aria-label': name, title: name },
-    h('span', { class: 'provider-glyph', 'aria-hidden': 'true' }, h('img', { src: icon, alt: '' })),
-    label ? h('span', { text: name }) : null);
+function brandMark(kind, label = true, displayName) {
+  const status = adapterStatus(getState().view, kind);
+  const meta = platformMeta(kind, displayName || status?.displayName);
+  return h('span', { class: `provider-mark provider-tone-${meta.tone} provider-icon-${meta.iconShape}`, role: 'img', 'aria-label': meta.displayName, title: meta.displayName, dataset: { adapter: meta.id } },
+    h('span', { class: 'provider-glyph', 'aria-hidden': 'true' }, meta.icon ? h('img', { src: meta.icon, alt: '' }) : h('span', { class: 'provider-generic-mark', text: '◇' })),
+    label ? h('span', { text: meta.displayName }) : null);
 }
 
-function providerLabel(kind) { return kind === 'claude' ? 'Claude Code' : 'Codex CLI'; }
+function providerLabel(kind, view = getState().view) {
+  const status = adapterStatus(view, kind);
+  return platformMeta(kind, status?.displayName).displayName;
+}
+function sessionCapabilities(view, session) {
+  const status = adapterStatus(view, session?.kind);
+  if (status) return status.capabilities || {};
+  if (session?.adapterCapabilities) return session.adapterCapabilities;
+  return session ? {
+    models: session.canSetModel === true,
+    modelSelection: session.canSetModel === true ? 'freeform' : 'none',
+    effortLevels: session.effortLevels || [],
+    permissionModes: session.permissionModes || [],
+    attachments: session.attachments || { images: session.canAttach === true, maxCount: session.maxAttachments || 0 },
+    runtime: session.runtime
+  } : {};
+}
+function sessionResumeRef(session) { return session?.resumeRef || session?.nativeSessionId || ''; }
+function historyCounts(session) {
+  return {
+    total: session?.historyMessageCount ?? session?.nativeMessageCount ?? 0,
+    cached: session?.historyCachedMessages ?? session?.nativeCachedMessages ?? 0,
+    complete: session?.historyCacheComplete ?? session?.nativeCacheComplete
+  };
+}
+function canUseDiff(view, session) {
+  const caps = sessionCapabilities(view, session);
+  return Boolean(session?.diff) || caps.diff === true || (caps.diff === undefined && view?.server?.features?.diff === true);
+}
 function sessionStateLabel(state) { return sessionStateLabels[state] || state || '未知'; }
 function isPending(state, key) { return Boolean(key && state?.submitting?.has(key)); }
 function fmtCost(value) { return Number.isFinite(value) && value >= 0 ? `$${value.toFixed(value < 0.01 ? 4 : 2)}` : null; }
@@ -336,7 +366,7 @@ function askUserQuestionForm(approval, questions, session, submitting, online) {
       h('legend', {}, question.header ? h('span', { class: 'approval-question-header', text: question.header }) : null, h('strong', { text: question.question }), question.multiSelect ? h('small', { text: '可多选' }) : null),
       h('div', { class: 'approval-options' }, controls));
   });
-  const secondary = (approval.choices || []).filter((choice) => choice === 'deny' || choice === 'cancel').map((choice) =>
+  const secondary = (approval.choices || []).filter((choice) => approvalChoices.has(choice) && (choice === 'deny' || choice === 'cancel')).map((choice) =>
     button(approvalChoiceLabel(approval, choice), 'approval', { class: choice === 'deny' ? 'btn-danger' : 'btn-quiet', disabled: submitting || !online,
       data: { approvalId: approval.approvalId, sessionId: session.localSessionId, decision: choice, tool: approval.tool } }));
   return h('form', { class: 'approval-question-form', dataset: { form: 'approval-questions', approvalId: approval.approvalId, sessionId: session.localSessionId } },
@@ -354,6 +384,7 @@ function approvalCard(item, session) {
   const expired = approval.state === 'expired';
   const askTool = approval.kind === 'userInput' && approval.tool === 'AskUserQuestion';
   const questions = askTool ? askUserQuestions(approval) : null;
+  const choices = Array.isArray(approval.choices) ? approval.choices.filter((choice) => approvalChoices.has(choice)) : [];
   const card = h('article', { class: 'timeline-item approval-card', dataset: { state: approval.state, localSeq: item.localSeq }, 'aria-live': 'assertive' },
     h('div', { class: 'timeline-head' }, h('strong', {}, expired ? '审批已过期' : '需要你的审批'), badge(approvalStateLabels[approval.state] || approval.state, approval.state === 'pending' ? 'running' : approval.state)),
     h('h3', { text: approval.summary }),
@@ -365,8 +396,9 @@ function approvalCard(item, session) {
   if (expired && expanded) card.append(h('p', {}, '审批已过期，后端可能已自动拒绝。'));
   if (askTool && !questions) card.append(h('div', { class: 'banner banner-error', text: '问题结构无效。为避免提交错误回答，只能拒绝或取消。' }));
   if (approval.state === 'pending' || submitting) {
-    if (questions) card.append(askUserQuestionForm(approval, questions, session, submitting, online));
-    else card.append(h('div', { class: 'row' }, (approval.choices || []).filter((choice) => !askTool || choice === 'deny' || choice === 'cancel').map((choice) =>
+    if (!choices.length) card.append(h('div', { class: 'banner banner-error', text: '审批请求未提供可用选项，请刷新会话状态。' }));
+    else if (questions && choices.includes('allow')) card.append(askUserQuestionForm(approval, questions, session, submitting, online));
+    else card.append(h('div', { class: 'row' }, choices.filter((choice) => !askTool || choice === 'deny' || choice === 'cancel').map((choice) =>
       button(approvalChoiceLabel(approval, choice), 'approval', {
       class: choice === 'deny' ? 'btn-danger' : choice === 'allow_session' ? 'btn-cyan' : 'btn-primary',
       disabled: submitting || !online,
@@ -401,17 +433,23 @@ function nodeLabel(view, nodeId) {
 }
 
 function quickAdapterCard(view, state, adapter) {
-  const profiles = view.accounts?.adapters?.find((item) => item.adapter === adapter.adapter)?.profiles || [];
+  const caps = adapter.capabilities || {};
+  const meta = platformMeta(adapter.adapter, adapter.displayName);
+  const profiles = caps.profiles ? view.accounts?.adapters?.find((item) => item.adapter === adapter.adapter)?.profiles || [] : [];
   const profile = profiles.find((item) => item.active) || profiles[0];
   const model = adapter.effectiveModel || profile?.effectiveModel || (view.config?.defaultAdapter === adapter.adapter ? view.config?.effectiveModel || view.config?.model : '') || 'CLI 默认模型';
   const disabled = view.connection.state !== 'online' || !view.nodes.some((node) => node.configured) || isPending(state, 'create-session');
-  return h('article', { class: `console-adapter-card ${adapter.adapter}` },
-    h('div', { class: 'row space-between' }, brandMark(adapter.adapter), badge(adapter.available ? '可用' : '不可用', adapter.available ? 'online' : 'error')),
-    h('div', { class: 'console-adapter-meta' },
-      h('span', { text: `Profile · ${profile?.displayName || '原生默认'}` }),
-      h('span', { text: `Model · ${model}` })),
+  const details = [
+    caps.profiles ? `Profile · ${profile?.displayName || '原生默认'}` : null,
+    canSelectModel(caps) ? `Model · ${model}` : null,
+    caps.runtime?.source === 'local-server' ? `Runtime · ${caps.runtime.shared ? '共享本地 Server' : '本地 Server'}` : null,
+    !adapter.available ? `状态 · ${adapter.unavailableReason || adapter.compatibility?.reason || '当前运行时不可用'}` : null
+  ].filter(Boolean);
+  return h('article', { class: `console-adapter-card adapter-tone-${meta.tone}`, dataset: { adapter: adapter.adapter } },
+    h('div', { class: 'row space-between' }, brandMark(adapter.adapter, true, adapter.displayName), badge(adapter.available ? '可用' : '不可用', adapter.available ? 'online' : 'error')),
+    details.length ? h('div', { class: 'console-adapter-meta' }, details.map((text) => h('span', { text }))) : null,
     button(isPending(state, 'create-session') ? '创建中…' : `使用 ${providerLabel(adapter.adapter)} 新建`, 'open-create', {
-      class: adapter.adapter === 'claude' ? 'btn-primary' : 'btn-cyan', disabled: disabled || !adapter.available, data: { kind: adapter.adapter }
+      class: meta.actionClass, disabled: disabled || !adapter.available, data: { kind: adapter.adapter }
     }));
 }
 
@@ -419,22 +457,24 @@ function consolePage(view, state) {
   const session = view.activeSession;
   const sessionMessages = session?.messages?.filter((item) => item.kind === 'message') || [];
   const activeNode = view.nodes.find((node) => node.nodeId === view.activeNodeId);
-  const adapters = (view.server?.adapters || []).filter((adapter) => ['claude', 'codex'].includes(adapter.adapter));
+  const adapters = adapterList(view);
   const page = h('main', { id: 'main-content', class: 'page console-page', tabindex: '-1' }, connectionStrip(view));
   page.append(pageHeading('控制台', '连接状态不阻塞本地内容', [button(isPending(state, 'create-session') ? '创建中…' : '＋ 新建会话', 'open-create', { class: 'btn-primary', disabled: isPending(state, 'create-session') })]));
   const primary = h('div', { class: 'timeline-panel' });
   if (session) {
+    const caps = sessionCapabilities(view, session);
     primary.append(h('section', { class: 'card active-session-card' },
       h('div', { class: 'row space-between' }, brandMark(session.kind), badge(sessionStateLabel(session.state), session.state)),
       h('h2', { text: session.title }), h('p', { class: 'muted', text: sessionMessages.length ? sessionMessages[sessionMessages.length - 1].text : '本地会话记录可用' }),
       h('div', { class: 'meta-grid active-session-meta' },
         meta('节点', nodeLabel(view, session.nodeId)), meta('平台', providerLabel(session.kind)),
-        meta('Profile', profileLabel(view, session.kind, session.profileId)), meta('Model', session.model || 'CLI 默认模型'),
+        caps.profiles ? meta('Profile', profileLabel(view, session.kind, session.profileId)) : null,
+        canSelectModel(caps) ? meta('Model', session.model || 'CLI 默认模型') : null,
         meta('工作目录', session.cwd || 'CLI 默认目录'), meta('状态', sessionStateLabel(session.state))),
       h('div', { class: 'row space-between active-session-actions' },
         h('span', { class: 'muted', text: session.remoteSessionId ? '远端热会话' : 'Android 本地历史' }),
         h('div', { class: 'row' },
-          button(isPending(state, `diff-${session.localSessionId}`) ? '读取中…' : 'Diff', 'open-diff', { class: 'btn-quiet', disabled: isPending(state, `diff-${session.localSessionId}`) || (!session.diff && (view.connection.state !== 'online' || !session.remoteSessionId)), data: { sessionId: session.localSessionId } }),
+          canUseDiff(view, session) ? button(isPending(state, `diff-${session.localSessionId}`) ? '读取中…' : 'Diff', 'open-diff', { class: 'btn-quiet', disabled: isPending(state, `diff-${session.localSessionId}`) || (!session.diff && (view.connection.state !== 'online' || !session.remoteSessionId)), data: { sessionId: session.localSessionId } }) : null,
           button(isPending(state, `open-${session.localSessionId}`) ? '打开中…' : '专注会话', 'open-session', { class: 'btn-cyan', disabled: isPending(state, `open-${session.localSessionId}`), data: { sessionId: session.localSessionId } })))));
   }
   else primary.append(h('section', { class: 'empty-state' }, h('div', { class: 'empty-icon', 'aria-hidden': 'true' }, '⌁'), h('h2', {}, view.nodes.length ? '还没有打开会话' : '先保留你的思路'), h('p', {}, view.nodes.length ? '从本地会话列表打开，或创建一个新会话。' : '尚未配置节点。本地历史仍可查看，节点配置不会阻塞控制台。'), view.nodes.length ? button('查看会话', 'route', { class: 'btn-primary', data: { route: 'sessions' } }) : button('前往节点', 'route', { class: 'btn-cyan', data: { route: 'nodes' } })));
@@ -459,12 +499,19 @@ function conversationPage(view, state) {
   const segments = conversationSegments(conversationItems(session.messages));
   const sessionInfoId = `session-info-${session.localSessionId}`;
   const sessionInfoOpen = state.expandedItems.has(sessionInfoId);
+  const caps = sessionCapabilities(view, session);
+  const permissionModes = capabilityList(caps, 'permissionModes', session.permissionModes);
+  const history = historyCapability(caps);
+  const resumeRef = sessionResumeRef(session);
+  const historyState = historyCounts(session);
+  const legacyHistorySnapshot = Boolean(resumeRef) && (historyState.total > 0 || historyState.cached > 0 || historyState.complete !== undefined);
+  const canReadHistory = history.messages || (caps.history === undefined && legacyHistorySnapshot);
   return h('main', { id: 'main-content', class: 'conversation-page', tabindex: '-1' },
     h('header', { class: 'conversation-header' },
       button('←', 'route', { class: 'btn-icon btn-quiet conversation-back', label: '返回会话列表', data: { route: 'sessions' } }),
       h('div', { class: 'conversation-title grow' }, h('strong', { text: session.title })),
       button('目录', 'toggle-outline', { class: 'btn-small btn-quiet conversation-outline-toggle', label: '打开会话分段目录', data: { open: String(!state.conversationOutlineOpen) } }),
-      button(isPending(state, `diff-${session.localSessionId}`) ? '读取中' : 'Diff', 'open-diff', { class: 'btn-small btn-cyan conversation-diff', disabled: isPending(state, `diff-${session.localSessionId}`) || (!session.diff && (view.connection.state !== 'online' || !session.remoteSessionId)), data: { sessionId: session.localSessionId } })),
+      canUseDiff(view, session) ? button(isPending(state, `diff-${session.localSessionId}`) ? '读取中' : 'Diff', 'open-diff', { class: 'btn-small btn-cyan conversation-diff', disabled: isPending(state, `diff-${session.localSessionId}`) || (!session.diff && (view.connection.state !== 'online' || !session.remoteSessionId)), data: { sessionId: session.localSessionId } }) : null),
     h('section', { class: `session-summary ${sessionInfoOpen ? 'expanded' : ''}`, 'aria-label': '当前会话摘要' },
       h('div', { class: 'session-summary-row' },
         brandMark(session.kind, false),
@@ -474,22 +521,23 @@ function conversationPage(view, state) {
       h('div', { id: sessionInfoId, class: 'session-info-panel', hidden: !sessionInfoOpen },
         h('div', { class: 'session-info-grid' },
           meta('状态', sessionStateLabel(session.state)), meta('工作目录', session.cwd || 'CLI 默认目录'),
-          meta('Profile', profileLabel(view, session.kind, session.profileId)), meta('请求模型', session.model || 'CLI 默认模型'),
-          session.kind === 'claude' ? meta('模式', permissionModeLabels[session.permissionMode] || 'Accept Edits') : null,
+          caps.profiles ? meta('Profile', profileLabel(view, session.kind, session.profileId)) : null,
+          canSelectModel(caps) ? meta('请求模型', session.model || 'CLI 默认模型') : null,
+          permissionModes.length ? meta('模式', permissionModeLabels[session.permissionMode] || session.permissionMode || permissionModeLabels[permissionModes[0]] || permissionModes[0]) : null,
           turn?.model && turn.model !== session.model ? meta('本轮实际模型', turn.model) : null),
         h('section', { class: 'context-strip', 'aria-label': '上下文窗口用量' },
           h('div', { class: 'row space-between' }, h('strong', { text: `上下文输入 ${fmtTokens(contextInput)}` }), h('span', { class: 'muted', text: contextPercent == null ? '窗口上限由 CLI 管理' : `${fmtTokens(contextLimit)} · ${contextPercent}%` })),
           contextPercent == null ? null : h('progress', { class: 'context-meter', max: '100', value: String(contextPercent), 'aria-label': `上下文窗口已使用 ${contextPercent}%` })))),
     h('section', { class: 'conversation-scroll' },
-      session.nativeSessionId && !session.remoteSessionId && !session.nativeCacheComplete ? h('aside', { class: 'banner banner-warning native-cache-note' },
-        view.connection.state === 'online' ? '正在读取并缓存这份原生 CLI 历史。' : `当前离线：本机仅缓存 ${session.nativeCachedMessages || 0}/${session.nativeMessageCount || 0} 条；连接该节点后打开会话可补全。`) : null,
+      resumeRef && !session.remoteSessionId && canReadHistory && historyState.complete !== true ? h('aside', { class: 'banner banner-warning native-cache-note' },
+        view.connection.state === 'online' ? '正在读取并缓存这份运行时历史。' : `当前离线：本机仅缓存 ${historyState.cached}/${historyState.total} 条；连接该节点后打开会话可补全。`) : null,
       session.hasOlderLocalMessages ? button(isPending(state, `older-${session.localSessionId}`) ? '加载中…' : '加载更早本地记录', 'load-older', { class: 'btn-quiet', disabled: isPending(state, `older-${session.localSessionId}`), data: { sessionId: session.localSessionId } }) : null,
     h('div', { class: 'conversation-timeline', 'aria-label': '会话记录' }, segments.map((segment) =>
         h('section', { id: segment.id, class: 'conversation-segment', dataset: { segmentId: segment.id } },
           h('div', { class: 'timeline segment-timeline' }, segment.items.map((item) => timelineItem(item, session, state))))))),
     conversationOutline(view, segments, state),
     button('↓ 最新', 'jump-latest', { class: 'jump-to-latest', label: '快速回到会话底部' }),
-    composer(session, view.connection.state, state));
+    composer(session, view, state));
 }
 
 function sessionGroups(sessions = [], nowValue) {
@@ -541,13 +589,19 @@ function setConversationOutlineOpen(open) {
 
 let draftTimer = 0;
 let pairDraftTimer = 0;
-function composer(session, connectionState, state) {
-  const offline = connectionState !== 'online';
+function composer(session, view, state) {
+  const offline = view.connection.state !== 'online';
   const configurationLocked = offline || session.state === 'running';
   const sending = state.submitting.has(`send-${session.localSessionId}`);
   const interrupting = state.submitting.has(`interrupt-${session.localSessionId}`);
   const pickingAttachment = state.submitting.has(`attachment-${session.localSessionId}`);
   const attachments = (session.composerAttachments || []).filter(validArtifact);
+  const caps = sessionCapabilities(view, session);
+  const permissionModes = capabilityList(caps, 'permissionModes', session.permissionModes);
+  const modelSelectable = canSelectModel(caps) || (caps.models === undefined && session.canSetModel === true);
+  const attachment = attachmentCapability(caps);
+  const canAttach = attachment.images || (caps.attachments === undefined && session.canAttach === true);
+  const maxAttachments = attachment.maxCount || session.maxAttachments || 0;
   return h('section', { class: 'composer-dock', 'aria-label': '消息输入区' }, h('div', { class: 'composer' },
     offline ? h('div', { class: 'banner banner-warning' }, '当前离线：草稿会保存，但不会进入发送队列。恢复在线后请重新确认发送。') : null,
     h('div', { id: 'slash-palette', class: 'slash-palette', role: 'listbox', 'aria-label': '斜杠命令', hidden: true }),
@@ -555,13 +609,13 @@ function composer(session, connectionState, state) {
       h('span', { class: 'composer-attachment' }, h('img', { src: artifact.localUrl, alt: '' }), h('span', { text: artifact.name || '图片' }),
         button(isPending(state, `remove-attachment-${artifact.artifactId}`) ? '…' : '×', 'remove-attachment', { class: 'btn-icon btn-quiet', label: `移除 ${artifact.name || '图片'}`, disabled: isPending(state, `remove-attachment-${artifact.artifactId}`), data: { sessionId: session.localSessionId, artifactId: artifact.artifactId } })))) : null,
     h('div', { class: 'composer-configuration', 'aria-label': '当前会话配置' },
-      (session.permissionModes || []).length ? choiceField('模式', 'permissionMode', session.permissionModes.map((mode) => [mode, permissionModeLabels[mode] || mode, configurationLocked]), session.permissionMode || 'acceptEdits', 'session', { class: 'composer-choice', hiddenLabel: true }) : null,
-      (session.permissionModes || []).length ? button(`模型 · ${modelDisplay(session.model)}`, 'open-session-model', { class: 'btn-small btn-quiet composer-model', disabled: configurationLocked || isPending(state, `model-${session.localSessionId}`), label: '切换当前会话模型' }) : null),
+      permissionModes.length ? choiceField('模式', 'permissionMode', permissionModes.map((mode) => [mode, permissionModeLabels[mode] || mode, configurationLocked]), session.permissionMode || permissionModes[0], 'session', { class: 'composer-choice', hiddenLabel: true }) : null,
+      modelSelectable ? button(`模型 · ${modelDisplay(session.model)}`, 'open-session-model', { class: 'btn-small btn-quiet composer-model', disabled: configurationLocked || isPending(state, `model-${session.localSessionId}`), label: '切换当前会话模型' }) : null),
     h('textarea', { id: 'composer-input', rows: '2', placeholder: '输入消息，或输入 / 查看命令', 'aria-label': '消息', 'aria-controls': 'slash-palette', value: session.composerDraft || '' }),
     h('div', { class: 'composer-actions' },
-      button(pickingAttachment ? '选择中…' : '＋ 图片', 'pick-attachment', { class: 'btn-quiet', disabled: offline || attachments.length >= 4 || pickingAttachment, data: { sessionId: session.localSessionId } }),
+      canAttach ? button(pickingAttachment ? '选择中…' : '＋ 图片', 'pick-attachment', { class: 'btn-quiet', disabled: offline || maxAttachments <= 0 || attachments.length >= maxAttachments || pickingAttachment, data: { sessionId: session.localSessionId } }) : null,
       button('专注编辑', 'focus-draft', { class: 'btn-quiet', data: { sessionId: session.localSessionId } }),
-      h('span', { class: 'muted composer-status', text: attachments.length ? `${attachments.length}/4 张` : '草稿自动保存' }),
+      h('span', { class: 'muted composer-status', text: attachments.length ? (maxAttachments ? `${attachments.length}/${maxAttachments} 张` : `${attachments.length} 张`) : '草稿自动保存' }),
       session.canInterrupt ? button(interrupting ? '中断中…' : '中断', 'interrupt', { class: 'btn-danger', disabled: interrupting, data: { sessionId: session.localSessionId } }) : null,
       button(sending ? '发送中…' : '发送', 'send', { class: 'btn-primary', disabled: (!session.canSend && !offline) || sending, data: { sessionId: session.localSessionId, offline } }))));
 }
@@ -574,9 +628,9 @@ function sessionsPage(view, state) {
     h('section', { class: 'filter-grid', 'aria-label': '会话筛选' },
       h('input', { class: 'search', type: 'search', value: f.query, placeholder: '搜索标题或内容', 'aria-label': '搜索会话', dataset: { filter: 'query' } }),
       selectField('node', '节点', [['all', '全部节点'], ...view.nodes.map((n) => [n.nodeId, n.displayName])], f.node),
-      selectField('kind', '平台', [['all', '全部平台'], ['claude', 'Claude'], ['codex', 'Codex']], f.kind),
+      selectField('kind', '平台', [['all', '全部平台'], ...adapterList(view, { includeObserved: true }).map((adapter) => [adapter.adapter, platformMeta(adapter.adapter, adapter.displayName).shortLabel])], f.kind),
       selectField('state', '状态', [['all', '全部状态'], ['running', '运行中'], ['idle', '空闲'], ['completed', '已完成'], ['failed', '失败'], ['ended', '已结束'], ['localOnly', '仅本地']], f.state)),
-    loading ? sessionSkeletons() : sessions.length ? h('section', { class: 'session-list' }, sessions.map((session) => sessionCard(session, view.now))) : h('section', { class: 'empty-state' }, h('div', { class: 'empty-icon' }, '☷'), h('h2', {}, '没有匹配的会话'), h('p', {}, '试试调整筛选条件，或创建一个新会话。')));
+    loading ? sessionSkeletons() : sessions.length ? h('section', { class: 'session-list' }, sessions.map((session) => sessionCard(session, view.now, view))) : h('section', { class: 'empty-state' }, h('div', { class: 'empty-icon' }, '☷'), h('h2', {}, '没有匹配的会话'), h('p', {}, '试试调整筛选条件，或创建一个新会话。')));
 }
 
 function sessionSkeletons() {
@@ -589,13 +643,13 @@ function selectField(name, label, options, value) {
   return choiceField(label, name, options, value, 'filter', { class: 'filter-choice', hiddenLabel: true });
 }
 
-function sessionCard(session, nowValue) {
+function sessionCard(session, nowValue, view) {
   const state = getState();
   const remoteHot = Boolean(session.remoteSessionId) && session.state === 'running';
   const opening = isPending(state, `open-${session.localSessionId}`);
   const deleting = isPending(state, `delete-${session.localSessionId}`);
   return h('article', { class: `card session-card ${session.unread ? 'unread' : ''}` },
-    h('div', { class: 'row space-between' }, brandMark(session.kind), h('div', { class: 'row' }, session.state === 'localOnly' ? h('span', { class: 'badge accent-yellow', text: '仅本地' }) : null, remoteHot ? h('span', { class: 'badge accent-lime', text: '远端热会话' }) : null, session.unread ? h('span', { class: 'badge accent-pink', text: `${session.unread} 未读` }) : null, badge(sessionStateLabel(session.state), session.state))),
+    h('div', { class: 'row space-between' }, brandMark(session.kind, true, adapterStatus(view, session.kind)?.displayName), h('div', { class: 'row' }, session.state === 'localOnly' ? h('span', { class: 'badge accent-yellow', text: '仅本地' }) : null, remoteHot ? h('span', { class: 'badge accent-lime', text: '远端热会话' }) : null, session.unread ? h('span', { class: 'badge accent-pink', text: `${session.unread} 未读` }) : null, badge(sessionStateLabel(session.state), session.state))),
     h('div', {}, h('h2', { text: session.title }), h('p', { class: 'muted', text: session.preview || '暂无预览' })),
     h('div', { class: 'row space-between' }, h('time', { class: 'muted', datetime: session.updatedAt, title: fmtTime(session.updatedAt), text: relTime(session.updatedAt, nowValue) }), h('div', { class: 'row' }, button(opening ? '打开中…' : '打开', 'open-session', { class: 'btn-small btn-cyan', disabled: opening, data: { sessionId: session.localSessionId } }), button(deleting ? '删除中…' : '删除', 'confirm-delete-session', { class: 'btn-small btn-danger', disabled: deleting, data: { sessionId: session.localSessionId, title: session.title } }))));
 }
@@ -624,16 +678,20 @@ function nodesPage(view, state) {
 function accountsPage(view, state) {
   const accounts = view.accounts;
   if (!accounts) return h('main', { id: 'main-content', class: 'page', tabindex: '-1' }, pageHeading('平台与账号', '凭据状态由 Android 安全提供'), h('section', { class: 'empty-state' }, h('h2', {}, '暂无账号状态')));
+  const profileAdapters = (accounts.adapters || []).filter((adapter) => adapter.capabilities?.profiles === true && Array.isArray(adapter.profiles) && adapter.profiles.length);
   return h('main', { id: 'main-content', class: 'page', tabindex: '-1' }, pageHeading('平台与账号', '切换只对下次新建会话生效'), h('div', { class: 'banner banner-warning' }, '已有会话不会中途切换 Profile；新建会话时会冻结平台、Profile 与 Model。'),
-    h('section', { class: 'account-list' }, accounts.adapters.map((adapter) => h('article', { class: `card account-group ${adapter.adapter}` },
+    profileAdapters.length ? h('section', { class: 'account-list' }, profileAdapters.map((adapter) => h('article', { class: `card account-group adapter-tone-${platformMeta(adapter.adapter, adapter.displayName).tone}`, dataset: { adapter: adapter.adapter } },
       h('div', { class: 'row space-between' }, h('h2', {}, adapter.displayName), badge(adapter.available ? '可用' : '不可用', adapter.available ? 'online' : 'error')),
       h('p', { class: 'muted', text: adapter.capabilities.description || '原生 CLI 账号环境' }),
-       adapter.profiles.map((profile) => h('div', { class: 'account-profile' }, h('div', {}, h('strong', { text: profile.displayName }), h('div', { class: 'row' }, profile.nativeDefault ? h('span', { class: 'badge', text: '原生默认' }) : null, h('span', { class: 'badge', text: profile.hasCredentials ? '已有凭据' : '无凭据' }), profile.active ? h('span', { class: 'badge accent-lime', text: '当前使用' }) : null)), profile.active ? null : button(isPending(state, `account-${adapter.adapter}`) ? '激活中…' : '激活', 'activate-account', { class: 'btn-small btn-cyan', disabled: !profile.hasCredentials || isPending(state, `account-${adapter.adapter}`), data: { nodeId: accounts.nodeId, adapter: adapter.adapter, profileId: profile.profileId } })))))));
+      !adapter.available ? h('p', { class: 'muted', text: adapter.unavailableReason || adapter.compatibility?.reason || '当前运行时不可用' }) : null,
+       adapter.profiles.map((profile) => h('div', { class: 'account-profile' }, h('div', {}, h('strong', { text: profile.displayName }), h('div', { class: 'row' }, profile.nativeDefault ? h('span', { class: 'badge', text: '原生默认' }) : null, h('span', { class: 'badge', text: profile.hasCredentials ? '已有凭据' : '无凭据' }), profile.active ? h('span', { class: 'badge accent-lime', text: '当前使用' }) : null)), profile.active ? null : button(isPending(state, `account-${adapter.adapter}`) ? '激活中…' : '激活', 'activate-account', { class: 'btn-small btn-cyan', disabled: !profile.hasCredentials || isPending(state, `account-${adapter.adapter}`), data: { nodeId: accounts.nodeId, adapter: adapter.adapter, profileId: profile.profileId } }))))))
+      : h('section', { class: 'empty-state' }, h('h2', {}, '当前平台无可切换 Profile'), h('p', {}, '凭据和 Provider 配置由对应的 PC 运行时管理。')));
 }
 
 function settingsPage(view, state) {
   const config = view.config || {};
-  const adapter = view.server?.adapters?.find((item) => item.adapter === config.defaultAdapter);
+  const availableAdapters = adapterList(view);
+  const adapter = availableAdapters.find((item) => item.adapter === config.defaultAdapter) || availableAdapters[0];
   const caps = adapter?.capabilities || {};
   const approvalLabels = { untrusted: '仅不受信任操作询问', 'on-failure': '失败后询问', 'on-request': '按需询问', never: '从不询问', ask: '每次询问', deny: '默认拒绝' };
   const sandboxLabels = { 'workspace-write': '工作区可写', 'read-only': '只读', 'danger-full-access': '完全访问（高风险）' };
@@ -641,20 +699,20 @@ function settingsPage(view, state) {
   const approvalOptions = (caps.approvalPolicies || ['on-request', 'never']).map((value) => [value, approvalLabels[value] || value]);
   const sandboxOptions = (caps.sandboxModes || (caps.sandbox ? ['workspace-write', 'read-only', 'danger-full-access'] : [])).map((value) => [value, sandboxLabels[value] || value]);
   const reviewerOptions = (caps.reviewers || (caps.approvalsReviewer ? ['auto_review', 'user'] : [])).map((value) => [value, reviewerLabels[value] || value]);
-  const adapters = (view.server?.adapters || []).map((item) => [item.adapter, item.displayName, !item.available]);
+  const adapters = availableAdapters.map((item) => [item.adapter, item.displayName, !item.available]);
   const offline = view.connection.state !== 'online';
   return h('main', { id: 'main-content', class: 'page', tabindex: '-1' }, pageHeading('设置', '偏好由 Android glue 持久化'),
     h('section', { class: 'card settings-section' }, h('h2', {}, '外观'), h('div', { class: 'segmented', role: 'group', 'aria-label': '主题' }, [['system', '跟随系统'], ['light', '日间'], ['dark', '夜间']].map(([key, text]) => h('button', { type: 'button', disabled: isPending(state, 'appearance'), dataset: { action: 'theme', theme: key }, 'aria-pressed': view.appearance.theme === key }, text)))),
     h('section', { class: 'card settings-section' }, h('h2', {}, '新会话默认值'),
-      settingSelect('默认平台', 'defaultAdapter', adapters.length ? adapters : [['claude', 'Claude Code'], ['codex', 'Codex CLI']], config.defaultAdapter),
-      h('div', { class: 'setting-row model-setting-row' }, h('div', {}, h('span', {}, '默认模型'), h('small', { class: 'muted', text: config.explicitModel === false ? '继承所选 Profile 的 CLI 配置' : '仅影响之后新建的会话' })),
-        button(modelDisplay(config.explicitModel === false ? '' : config.model, config.effectiveModel), 'open-model-config', { class: 'setting-value-button', disabled: offline })),
+      settingSelect('默认平台', 'defaultAdapter', adapters, adapter?.adapter || config.defaultAdapter),
+      canSelectModel(caps) ? h('div', { class: 'setting-row model-setting-row' }, h('div', {}, h('span', {}, '默认模型'), h('small', { class: 'muted', text: config.explicitModel === false ? '继承所选 Profile 的 CLI 配置' : '仅影响之后新建的会话' })),
+        button(modelDisplay(config.explicitModel === false ? '' : config.model, config.effectiveModel), 'open-model-config', { class: 'setting-value-button', disabled: offline })) : null,
       approvalOptions.length ? settingSelect('审批策略', 'approvalPolicy', approvalOptions, config.approvalPolicy) : null,
       sandboxOptions.length ? settingSelect('沙箱', 'sandbox', sandboxOptions, config.sandbox) : null,
       reviewerOptions.length ? settingSelect('审批复核', 'approvalsReviewer', reviewerOptions, config.approvalsReviewer) : null,
       h('div', { class: 'risk-note' }, h('strong', {}, '“本会话始终允许”风险'), h('p', {}, '只有审批卡明确提供该选项时才可使用；确认后，同名工具在当前会话后续调用将不再逐次询问。新会话不会继承。')),
       offline ? h('div', { class: 'banner banner-warning', text: '当前可离线查看设置；连接节点后才能修改后端配置。' }) : null),
-    h('section', { class: 'card settings-section' }, h('h2', {}, '关于'), h('div', { class: 'setting-row' }, h('span', {}, 'UI 版本'), h('code', {}, '0.0.3')), h('div', { class: 'setting-row' }, h('span', {}, '协议版本'), h('code', {}, '1'))));
+    h('section', { class: 'card settings-section' }, h('h2', {}, '关于'), h('div', { class: 'setting-row' }, h('span', {}, 'UI 版本'), h('code', { text: UI_VERSION })), h('div', { class: 'setting-row' }, h('span', {}, '协议版本'), h('code', { text: String(PROTOCOL_VERSION) }))));
 }
 
 function settingSelect(label, key, options, value) {
@@ -665,7 +723,7 @@ function settingSelect(label, key, options, value) {
 }
 
 function diagnosticsPage(view, state) {
-  const d = view.diagnostics || { protocolVersion: 1, notes: [] };
+  const d = view.diagnostics || { protocolVersion: PROTOCOL_VERSION, notes: [] };
   const t = d.transport || {};
   const activeNode = view.nodes.find((node) => node.nodeId === view.activeNodeId);
   const values = [
@@ -830,21 +888,23 @@ export function renderFocusPanel(state) {
 function modalContent(modal, state) {
   const view = state.view;
   if (modal.type === 'create') {
-    const adapters = view.server?.adapters?.filter((a) => a.available) || [{ adapter: 'claude', displayName: 'Claude Code', capabilities: {} }, { adapter: 'codex', displayName: 'Codex CLI', capabilities: {} }];
+    const adapters = adapterList(view, { availableOnly: true });
     const draft = state.createDraft;
     const adapter = adapters.find((item) => item.adapter === draft.kind) || adapters[0];
     const caps = adapter?.capabilities || {};
     const accountAdapter = view.accounts?.adapters?.find((item) => item.adapter === adapter?.adapter);
-    const profiles = accountAdapter?.profiles || [];
+    const profiles = caps.profiles ? accountAdapter?.profiles || [] : [];
     const models = modelSuggestions(view, adapter?.adapter);
     const profile = profiles.find((item) => item.profileId === draft.profileId) || profiles.find((item) => item.active);
-    return h('form', { dataset: { form: 'create' } }, h('h2', { id: 'dialog-title' }, '新建会话'), h('p', { class: 'muted' }, '平台与 Profile 在创建时确定；Claude 模式和支持的模型可在空闲时由你手动切换。'),
+    const effortLevels = capabilityList(caps, 'effortLevels');
+    const permissionModes = capabilityList(caps, 'permissionModes');
+    return h('form', { dataset: { form: 'create' } }, h('h2', { id: 'dialog-title' }, '新建会话'), h('p', { class: 'muted' }, '平台与 Profile 在创建时确定；只显示当前运行时明确声明的模型、推理深度和模式能力。'),
       createSelect('节点', 'nodeId', view.nodes.filter((n) => n.configured).map((n) => [n.nodeId, n.displayName]), draft.nodeId),
       createSelect('平台', 'kind', adapters.map((a) => [a.adapter, a.displayName]), adapter?.adapter),
-      caps.profiles ? createSelect('Profile（创建后冻结）', 'profileId', profiles.map((profile) => [profile.profileId, `${profile.displayName}${profile.hasCredentials ? '' : '（缺少凭据）'}`, !profile.hasCredentials]), draft.profileId) : null,
-      caps.models ? modelInput('初始模型', 'model', draft.model, models, profile?.effectiveModel || adapter?.effectiveModel) : null,
-      caps.effortLevels?.length ? createSelect('推理深度（创建后可调整）', 'effort', [['', 'CLI 默认'], ...caps.effortLevels.map((level) => [level, level])], draft.effort || '') : null,
-      caps.permissionModes?.length ? createSelect('初始模式', 'permissionMode', caps.permissionModes.map((mode) => [mode, permissionModeLabels[mode] || mode]), draft.permissionMode || 'acceptEdits') : null,
+      caps.profiles && profiles.length ? createSelect('Profile（创建后冻结）', 'profileId', profiles.map((profile) => [profile.profileId, `${profile.displayName}${profile.hasCredentials ? '' : '（缺少凭据）'}`, !profile.hasCredentials]), draft.profileId) : null,
+      canSelectModel(caps) ? modelInput('初始模型', 'model', draft.model, models, profile?.effectiveModel || adapter?.effectiveModel) : null,
+      effortLevels.length ? createSelect('推理深度（创建后可调整）', 'effort', [['', 'CLI 默认'], ...effortLevels.map((level) => [level, level])], draft.effort || '') : null,
+      permissionModes.length ? createSelect('初始模式', 'permissionMode', permissionModes.map((mode) => [mode, permissionModeLabels[mode] || mode]), draft.permissionMode || permissionModes[0]) : null,
       (caps.sandbox || caps.approvalsReviewer) ? h('section', { class: 'capability-summary', 'aria-label': '会话能力' },
         h('strong', {}, '本次会话能力'),
         h('div', { class: 'row' },
@@ -853,10 +913,10 @@ function modalContent(modal, state) {
         h('p', { class: 'muted', text: '这些值继承当前设置；CreateSessionDraft 不携带敏感配置。' })) : null,
       fieldInput('标题（可选）', 'title', '例如：修复登录流程', draft.title),
       h('div', { class: 'directory-field' }, fieldInput('工作目录（可选）', 'cwd', '留空使用默认目录', draft.cwd), button('浏览 PC', 'open-files', { class: 'btn-quiet directory-browse' })),
-      actions(button('取消', 'close-modal'), button(isPending(state, 'create-session') ? '创建中…' : '创建', 'submit-create', { class: 'btn-primary', disabled: isPending(state, 'create-session') || view.connection.state !== 'online' || !view.nodes.some((n) => n.configured) })));
+      actions(button('取消', 'close-modal'), button(isPending(state, 'create-session') ? '创建中…' : '创建', 'submit-create', { class: 'btn-primary', disabled: !adapter || isPending(state, 'create-session') || view.connection.state !== 'online' || !view.nodes.some((n) => n.configured) })));
   }
   if (modal.type === 'model-config') {
-    const kind = view.config?.defaultAdapter || 'claude';
+    const kind = view.config?.defaultAdapter || adapterList(view)[0]?.adapter || '';
     const value = view.config?.explicitModel === false ? '' : (view.config?.model || '');
     return h('form', { dataset: { form: 'model-config' } },
       h('h2', { id: 'dialog-title' }, '默认模型'),
@@ -982,11 +1042,14 @@ export function renderNotice(notices = []) {
 function initialCreateDraft(view, requestedKind) {
   const configuredNodes = view.nodes.filter((node) => node.configured);
   const adapters = view.server?.adapters?.filter((adapter) => adapter.available) || [];
-  const kind = requestedKind || view.config?.defaultAdapter || adapters[0]?.adapter || 'claude';
+  const preferredKind = requestedKind || view.config?.defaultAdapter || '';
+  const kind = adapters.some((adapter) => adapter.adapter === preferredKind) ? preferredKind : adapters[0]?.adapter || '';
   const adapter = adapters.find((item) => item.adapter === kind);
+  const caps = adapter?.capabilities || {};
   const profiles = view.accounts?.adapters?.find((item) => item.adapter === kind)?.profiles || [];
   const profile = profiles.find((item) => item.active && item.hasCredentials) || profiles.find((item) => item.hasCredentials);
   const model = view.config?.defaultAdapter === kind && view.config?.explicitModel !== false ? (view.config?.model || '') : '';
+  const permissionModes = capabilityList(caps, 'permissionModes');
   return {
     nodeId: configuredNodes.some((node) => node.nodeId === view.activeNodeId) ? view.activeNodeId : configuredNodes[0]?.nodeId || '',
     kind,
@@ -995,7 +1058,7 @@ function initialCreateDraft(view, requestedKind) {
     profileId: profile?.profileId || '',
     model,
     effort: '',
-    permissionMode: kind === 'claude' ? 'acceptEdits' : ''
+    permissionMode: permissionModes.includes('acceptEdits') ? 'acceptEdits' : permissionModes[0] || ''
   };
 }
 
@@ -1133,11 +1196,19 @@ function chooseValue(target) {
 }
 
 const slashCommands = [
-  { command: 'effort', title: '推理深度', hint: '选择后续轮次的原生 CLI effort' },
-  { command: 'diff', title: '查看 Diff', hint: '打开当前工作区变更' },
+  { command: 'effort', title: '推理深度', hint: '选择后续轮次的原生 CLI effort', capability: 'effort' },
+  { command: 'diff', title: '查看 Diff', hint: '打开当前工作区变更', capability: 'diff' },
   { command: 'new', title: '新建会话', hint: '创建并进入新的全屏会话' },
   { command: 'help', title: '命令帮助', hint: '查看本地可用的斜杠命令' }
 ];
+
+function availableSlashCommands(view, session) {
+  const caps = sessionCapabilities(view, session);
+  const efforts = capabilityList(caps, 'effortLevels', session?.effortLevels);
+  return slashCommands.filter((item) => !item.capability
+    || (item.capability === 'effort' && efforts.length)
+    || (item.capability === 'diff' && (caps.diff === true || (caps.diff === undefined && view?.server?.features?.diff === true))));
+}
 
 function updateSlashPalette(value) {
   const palette = document.querySelector('#slash-palette');
@@ -1145,9 +1216,11 @@ function updateSlashPalette(value) {
   const text = String(value || '').trimStart();
   if (!text.startsWith('/') || text.includes('\n')) { palette.hidden = true; replaceChildren(palette); return; }
   const query = text.slice(1).trim().toLowerCase();
-  const session = getState().view?.activeSession;
-  if (query === 'effort' || query.startsWith('effort ')) {
-    const levels = session?.effortLevels || [];
+  const view = getState().view;
+  const session = view?.activeSession;
+  const caps = sessionCapabilities(view, session);
+  const levels = capabilityList(caps, 'effortLevels', session?.effortLevels);
+  if ((query === 'effort' || query.startsWith('effort ')) && levels.length) {
     const options = [['', 'CLI 默认'], ...levels.map((level) => [level, level])];
     replaceChildren(palette, h('div', { class: 'slash-heading', text: '选择推理深度 · 对后续轮次生效' }), ...options.map(([effort, label], index) => h('button', {
       type: 'button', class: `slash-option ${index === 0 ? 'active' : ''}`, role: 'option', dataset: { action: 'set-effort', effort }, 'aria-selected': index === 0 ? 'true' : 'false'
@@ -1155,7 +1228,7 @@ function updateSlashPalette(value) {
     palette.hidden = false;
     return;
   }
-  const matches = slashCommands.filter((item) => !query || item.command.startsWith(query));
+  const matches = availableSlashCommands(view, session).filter((item) => !query || item.command.startsWith(query));
   if (!matches.length) { palette.hidden = true; replaceChildren(palette); return; }
   replaceChildren(palette, ...matches.map((item, index) => h('button', {
     type: 'button', class: `slash-option ${index === 0 ? 'active' : ''}`, role: 'option', dataset: { action: 'slash-command', command: item.command }, 'aria-selected': index === 0 ? 'true' : 'false'
@@ -1407,7 +1480,8 @@ export function bindInteractions() {
     const data = Object.fromEntries(new FormData(form));
     if (form.dataset.form === 'create') {
       const payload = Object.fromEntries(Object.entries(data).filter(([, value]) => value !== ''));
-      if (!payload.nodeId || !['claude', 'codex'].includes(payload.kind)) { setNotice('请选择节点和平台', { level: 'warning' }); return; }
+      const adapterAvailable = adapterList(getState().view, { availableOnly: true }).some((adapter) => adapter.adapter === payload.kind);
+      if (!payload.nodeId || !adapterAvailable) { setNotice('请选择可用的节点和平台', { level: 'warning' }); return; }
       sendIntent('session.create', payload, { pendingKey: 'create-session' }); setModal(null);
     }
     if (form.dataset.form === 'model-config') {

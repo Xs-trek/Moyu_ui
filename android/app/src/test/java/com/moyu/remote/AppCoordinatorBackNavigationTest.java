@@ -32,7 +32,7 @@ public final class AppCoordinatorBackNavigationTest {
         app.database().putSetting("route", "conversation");
         host = new TestHost(app);
         coordinator = new AppCoordinator(app, host);
-        coordinator.postIntent("{\"version\":1,\"type\":\"app.ready\",\"requestId\":\"ready-back-test\",\"payload\":{\"uiVersion\":\"test\"}}");
+        coordinator.postIntent("{\"version\":1,\"type\":\"app.ready\",\"requestId\":\"ready-back-test\",\"payload\":{\"uiVersion\":\""+BuildConfig.VERSION_NAME+"\"}}");
     }
 
     @After public void tearDown() {

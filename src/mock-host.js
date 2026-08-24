@@ -1,4 +1,5 @@
 import { fixtures, makeFixture } from './mock-data.js';
+import { attachmentCapability, canSelectModel, capabilityList } from './platform-meta.js';
 import { setModal, update } from './state.js';
 
 let revision = 0;
@@ -52,6 +53,14 @@ function applyFixtureModal() {
 function syncActiveSessionControls() {
   const session = view.activeSession;
   if (!session) return;
+  const caps = view.server?.adapters?.find((adapter) => adapter.adapter === session.kind)?.capabilities || session.adapterCapabilities || {};
+  const attachment = attachmentCapability(caps);
+  session.adapterCapabilities = clone(caps);
+  session.effortLevels = capabilityList(caps, 'effortLevels', session.effortLevels);
+  session.permissionModes = capabilityList(caps, 'permissionModes', session.permissionModes);
+  session.canSetModel = canSelectModel(caps);
+  session.canAttach = attachment.images;
+  session.maxAttachments = attachment.maxCount;
   const connected = view.connection.state === 'online' && view.connection.nodeId === session.nodeId;
   session.canSend = connected && session.state !== 'running';
   session.canInterrupt = connected && session.state === 'running';
@@ -80,15 +89,20 @@ function handleIntent(intent) {
       ];
       view.activeLocalSessionId = selected.localSessionId;
       view.activeSession = { ...saved, ...selected, messages, cwd: saved?.cwd || '', hasOlderLocalMessages: Boolean(saved?.hasOlderLocalMessages), composerDraft: saved?.composerDraft || '', composerAttachments: saved?.composerAttachments || [], canSend: view.connection.state === 'online' && view.connection.nodeId === selected.nodeId && selected.state !== 'running', canInterrupt: selected.state === 'running' };
+      syncActiveSessionControls();
       view.route = 'conversation'; full({ ...view }); result(intent.requestId);
     } else result(intent.requestId, false, { code: 'session_not_found', summary: 'Session not found', retryable: false, category: 'not-found' });
     return;
   }
   if (intent.type === 'session.create') {
     const id = `session-mock-${Date.now()}`;
-    const summary = { localSessionId: id, nodeId: intent.payload.nodeId, kind: intent.payload.kind, title: intent.payload.title || '新的远程任务', updatedAt: new Date().toISOString(), state: 'idle', unread: 0, lastSeq: 0, preview: '新会话已在 Mock Host 中创建。', profileId: intent.payload.profileId || undefined, model: intent.payload.model || undefined, permissionMode: intent.payload.kind === 'claude' ? (intent.payload.permissionMode || 'acceptEdits') : undefined };
+    const caps = view.server?.adapters?.find((adapter) => adapter.adapter === intent.payload.kind)?.capabilities || {};
+    const modes = capabilityList(caps, 'permissionModes');
+    const efforts = capabilityList(caps, 'effortLevels');
+    const requestedMode = modes.includes(intent.payload.permissionMode) ? intent.payload.permissionMode : modes[0];
+    const summary = { localSessionId: id, nodeId: intent.payload.nodeId, kind: intent.payload.kind, title: intent.payload.title || '新的远程任务', updatedAt: new Date().toISOString(), state: 'idle', unread: 0, lastSeq: 0, preview: '新会话已在 Mock Host 中创建。', profileId: caps.profiles ? intent.payload.profileId || undefined : undefined, model: canSelectModel(caps) ? intent.payload.model || undefined : undefined, effort: efforts.includes(intent.payload.effort) ? intent.payload.effort : undefined, permissionMode: requestedMode };
     view.sessions = [summary, ...view.sessions];
-    view.activeLocalSessionId = id; view.activeSession = { ...summary, cwd: intent.payload.cwd, messages: [], effortLevels: intent.payload.kind === 'claude' ? ['low', 'medium', 'high', 'xhigh', 'max'] : [], permissionModes: intent.payload.kind === 'claude' ? ['plan', 'auto', 'acceptEdits'] : [], hasOlderLocalMessages: false, composerDraft: '', composerAttachments: [], canSend: false, canInterrupt: false };
+    view.activeLocalSessionId = id; view.activeSession = { ...summary, cwd: intent.payload.cwd, messages: [], effortLevels: efforts, permissionModes: modes, hasOlderLocalMessages: false, composerDraft: '', composerAttachments: [], canSend: false, canInterrupt: false };
     syncActiveSessionControls();
     view.route = 'conversation';
     full({ ...view }); result(intent.requestId); return;

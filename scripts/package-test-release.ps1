@@ -114,7 +114,7 @@ Assert-NativeSuccess 'APK signature verification'
 $badgingLines = & $aapt dump badging $signedApk
 Assert-NativeSuccess 'APK badging inspection'
 $packageLine = $badgingLines | Select-Object -First 1
-if ($packageLine -notmatch "package: name='com\.moyu\.remote'" -or $packageLine -notmatch "versionName='0\.0\.3'") { throw "Unexpected package identity: $packageLine" }
+if ($packageLine -notmatch "package: name='com\.moyu\.remote'" -or $packageLine -notmatch "versionName='0\.0\.4'") { throw "Unexpected package identity: $packageLine" }
 if (-not ($badgingLines -match "application-label:'moyu'")) { throw 'Unexpected application label' }
 if (-not ($badgingLines -match "native-code: 'arm64-v8a'")) { throw 'APK is not the arm64 Moyu build' }
 $entries = & $aapt list $signedApk
@@ -122,13 +122,14 @@ Assert-NativeSuccess 'APK content inspection'
 if ($entries -notcontains 'assets/ui/index.html') { throw 'Signed APK does not contain assets/ui/index.html' }
 if ($entries -contains 'assets/ui/preview.html') { throw 'Signed APK unexpectedly contains preview.html' }
 if ($entries -match 'assets/ui/assets/preview-' -or $entries -match 'mock-host') { throw 'Signed APK unexpectedly contains Mock Host assets' }
-foreach ($brandAsset in @('assets/ui/assets/brands/anthropic.svg', 'assets/ui/assets/brands/openai.svg')) {
+foreach ($brandAsset in @('assets/ui/assets/brands/anthropic.svg', 'assets/ui/assets/brands/openai.svg', 'assets/ui/assets/brands/opencode.svg')) {
     if ($entries -notcontains $brandAsset) { throw "Signed APK is missing approved local brand asset $brandAsset" }
 }
 foreach ($entry in @(
     'assets/licenses/Apache-2.0.txt',
     'assets/licenses/EasyTier-LGPL-3.0.txt',
     'assets/licenses/GPL-3.0.txt',
+    'assets/licenses/OpenCode-MIT.txt',
     'assets/licenses/THIRD_PARTY_NOTICES.txt',
     'lib/arm64-v8a/libeasytier_android_jni.so',
     'lib/arm64-v8a/libeasytier_ffi.so'

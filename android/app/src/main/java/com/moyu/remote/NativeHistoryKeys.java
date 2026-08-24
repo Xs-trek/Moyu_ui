@@ -4,12 +4,12 @@ package com.moyu.remote;
 final class NativeHistoryKeys {
     private NativeHistoryKeys() { }
 
-    static String prefix(String localSessionId, String kind, String nativeSessionId) {
-        if (localSessionId == null || kind == null || nativeSessionId == null) throw new IllegalArgumentException("native history identity required");
-        return "native:" + localSessionId + ":" + kind + ":" + nativeSessionId + ":";
+    static String prefix(String localSessionId, String kind, String resumeRef) {
+        if (localSessionId == null || kind == null || resumeRef == null) throw new IllegalArgumentException("history resume identity required");
+        return "native:" + localSessionId + ":" + kind + ":" + resumeRef + ":";
     }
 
-    static String item(String localSessionId, String kind, String nativeSessionId, int seq, String part) {
-        return prefix(localSessionId, kind, nativeSessionId) + seq + ":" + part;
+    static String item(String localSessionId, String kind, String resumeRef, int seq, String part) {
+        return prefix(localSessionId, kind, resumeRef) + seq + ":" + part;
     }
 }

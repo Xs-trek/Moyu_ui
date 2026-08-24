@@ -39,12 +39,29 @@ public final class AppCoordinatorReadyGateTest {
         coordinator.postIntent("{\"version\":1,\"type\":\"view.reload\",\"requestId\":\"reload-before-ready\",\"payload\":{}}");
         assertNull(host.awaitFull(250));
 
-        coordinator.postIntent("{\"version\":1,\"type\":\"app.ready\",\"requestId\":\"ready-gate-test\",\"payload\":{\"uiVersion\":\"test\"}}");
+        coordinator.postIntent("{\"version\":1,\"type\":\"app.ready\",\"requestId\":\"ready-gate-test\",\"payload\":{\"uiVersion\":\""+BuildConfig.VERSION_NAME+"\"}}");
         JSONObject full = host.awaitFull(2_000);
 
         assertNotNull(full);
         assertEquals("view.full", full.getString("type"));
         assertEquals(1, full.getLong("revision"));
+    }
+
+    @Test public void incompatibleUiVersionReturnsErrorWithoutEmittingFullView() throws Exception {
+        coordinator.postIntent("{\"version\":1,\"type\":\"app.ready\",\"requestId\":\"wrong-ui\",\"payload\":{\"uiVersion\":\"0.0.0-stale\"}}");
+
+        JSONObject result = host.awaitType("intent.result", 2_000);
+        assertNotNull(result);
+        assertEquals(false, result.getBoolean("ok"));
+        assertEquals("ui_version_incompatible", result.getJSONObject("error").getString("code"));
+        assertNull(host.awaitFull(250));
+    }
+
+    @Test public void localTestSuffixHasAnExplicitCompatibilityRule() {
+        assertEquals(true, AppCoordinator.compatibleUiVersion("0.0.4", "0.0.4-localtest"));
+        assertEquals(true, AppCoordinator.compatibleUiVersion("0.0.4-localtest", "0.0.4-localtest"));
+        assertEquals(false, AppCoordinator.compatibleUiVersion("0.0.3", "0.0.4-localtest"));
+        assertEquals(false, AppCoordinator.compatibleUiVersion("0.0.4", "0.0.4-debug"));
     }
 
     private static final class TestHost implements AppCoordinator.Host {
@@ -54,12 +71,16 @@ public final class AppCoordinatorReadyGateTest {
         TestHost(Context context) { this.context = context; }
 
         JSONObject awaitFull(long timeoutMs) throws InterruptedException {
+            return awaitType("view.full", timeoutMs);
+        }
+
+        JSONObject awaitType(String type, long timeoutMs) throws InterruptedException {
             long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
             while (System.nanoTime() < deadline) {
                 long remaining = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
                 JSONObject envelope = envelopes.poll(remaining, TimeUnit.MILLISECONDS);
                 if (envelope == null) return null;
-                if ("view.full".equals(envelope.optString("type"))) return envelope;
+                if (type.equals(envelope.optString("type"))) return envelope;
             }
             return null;
         }

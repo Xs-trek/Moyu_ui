@@ -81,7 +81,10 @@
 .session-card.unread { background: var(--yellow); background: color-mix(in srgb, var(--yellow) 35%, var(--surface)); }
 .platform-mark { display: inline-grid; place-items: center; width: 30px; height: 30px; border: var(--border-thin); background: var(--purple); font-weight: var(--weight-black); }
 .node-card.active { background: var(--cyan); background: color-mix(in srgb, var(--cyan) 24%, var(--surface)); }
-.account-group { border-top: 10px solid var(--purple); }.account-group.codex { border-top-color: var(--cyan); }
+.account-group { border-top: 10px solid var(--purple); }
+.account-group.adapter-tone-cyan { border-top-color: var(--cyan); }
+.account-group.adapter-tone-lime { border-top-color: var(--lime); }
+.account-group.adapter-tone-pink { border-top-color: var(--pink); }
 .account-profile { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; border-bottom: var(--border-thin); }
 .settings-section { margin-bottom: var(--space-5); }
 .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; border-bottom: var(--border-thin); }
@@ -122,7 +125,9 @@
 .console-node-card > strong { display: block; margin-bottom: var(--space-2); font-size: var(--text-lg); }
 .console-adapters { display: grid; gap: var(--space-3); }
 .console-adapter-card { display: grid; gap: var(--space-3); padding: var(--space-3); border: var(--border); background: var(--surface); box-shadow: var(--shadow-sm); }
-.console-adapter-card.codex { background: var(--cyan); background: color-mix(in srgb, var(--cyan) 18%, var(--surface)); }
+.console-adapter-card.adapter-tone-cyan { background: var(--cyan); background: color-mix(in srgb, var(--cyan) 18%, var(--surface)); }
+.console-adapter-card.adapter-tone-lime { background: var(--lime); background: color-mix(in srgb, var(--lime) 18%, var(--surface)); }
+.console-adapter-card.adapter-tone-pink { background: var(--pink); background: color-mix(in srgb, var(--pink) 14%, var(--surface)); }
 .console-adapter-meta { display: grid; gap: 3px; min-width: 0; color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .risk-note { margin-top: var(--space-3); padding: var(--space-3); border: var(--border-thin); background: var(--yellow); color: var(--on-accent); }
 .risk-note p { margin: var(--space-2) 0 0; }

@@ -13,6 +13,7 @@ final class ViewEmissionPolicy {
 
     static boolean updatesSessionTimestamp(String eventType) {
         return "turn.started".equals(eventType)
+                || "message.upsert".equals(eventType)
                 || "turn.completed".equals(eventType)
                 || "turn.failed".equals(eventType);
     }

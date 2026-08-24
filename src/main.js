@@ -2,6 +2,7 @@ import { initBridge, sendIntent } from './bridge.js';
 import { bindInteractions, render, renderFocusPanel, renderNotice } from './render.js';
 import { createRenderGate } from './render-gate.js';
 import { getState, subscribe } from './state.js';
+import { UI_VERSION } from './version.js';
 
 const media = window.matchMedia('(prefers-color-scheme: dark)');
 let releaseTimer = 0;
@@ -143,5 +144,5 @@ renderCurrent();
 initBridge();
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') sendIntent('app.ready', { uiVersion: '0.0.3' });
+  if (document.visibilityState === 'visible') sendIntent('app.ready', { uiVersion: UI_VERSION });
 });

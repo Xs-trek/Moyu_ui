@@ -17,6 +17,8 @@ import static org.junit.Assert.fail;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 33)
 public final class ApprovalDecisionTest {
+    private static final JSONArray CHOICES = new JSONArray().put("allow").put("deny");
+
     @Test public void forwardsBoundedAskUserQuestionAnswersWithoutStringifying() throws Exception {
         JSONObject answers = new JSONObject().put("single?", "B")
                 .put("multi?", new JSONArray().put("X").put("Y"));
@@ -42,9 +44,18 @@ public final class ApprovalDecisionTest {
         }
     }
 
+    @Test public void rejectsAWellKnownChoiceWhenCurrentRequestDidNotOfferIt() throws Exception {
+        try {
+            invoke(new JSONObject().put("decision", "allow_session"));
+            fail("Expected an unoffered choice to be rejected");
+        } catch (InvocationTargetException expected) {
+            assertEquals("UiFailure", expected.getCause().getClass().getSimpleName());
+        }
+    }
+
     private static Object invoke(JSONObject payload) throws Exception {
-        Method method = AppCoordinator.class.getDeclaredMethod("approvalDecision", JSONObject.class);
+        Method method = AppCoordinator.class.getDeclaredMethod("approvalDecision", JSONObject.class, JSONArray.class);
         method.setAccessible(true);
-        return method.invoke(null, payload);
+        return method.invoke(null, payload, CHOICES);
     }
 }

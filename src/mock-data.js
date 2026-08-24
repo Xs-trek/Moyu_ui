@@ -20,7 +20,8 @@ const baseSessions = [
   { localSessionId: 'session-claude', remoteSessionId: 'remote-a', nodeId: 'node-studio', kind: 'claude', title: '修复移动端登录流程', updatedAt: ago(2), profileId: 'claude-work', model: 'claude-sonnet', effort: 'high', permissionMode: 'acceptEdits', state: 'running', unread: 2, lastSeq: 12, preview: '我已经定位到 token 刷新竞态…' },
   { localSessionId: 'session-codex', remoteSessionId: 'remote-b', nodeId: 'node-studio', kind: 'codex', title: '重构缓存模块', updatedAt: ago(35), profileId: 'codex-main', model: 'gpt-5.2-codex', effort: 'medium', state: 'completed', unread: 0, lastSeq: 38, preview: '全部测试已通过，缓存命中率保持不变。' },
   { localSessionId: 'session-local', nativeSessionId: '11111111-1111-4111-8111-111111111111', resumable: true, nativeMessageCount: 12, nativeCachedMessages: 8, nativeCacheComplete: false, nodeId: 'node-home', kind: 'claude', title: '离线需求草稿', updatedAt: ago(180), state: 'localOnly', unread: 0, lastSeq: 8, preview: '等待节点恢复在线后继续。' },
-  { localSessionId: 'session-old', nodeId: 'node-studio', kind: 'codex', title: '诊断构建失败', updatedAt: ago(1440), profileId: 'native-codex', state: 'failed', unread: 1, lastSeq: 19, preview: '队列已满，任务没有自动重试。' }
+  { localSessionId: 'session-old', nodeId: 'node-studio', kind: 'codex', title: '诊断构建失败', updatedAt: ago(1440), profileId: 'native-codex', state: 'failed', unread: 1, lastSeq: 19, preview: '队列已满，任务没有自动重试。' },
+  { localSessionId: 'session-opencode', remoteSessionId: 'remote-open', resumeRef: 'ses_demo_opencode_01', resumable: true, nodeId: 'node-studio', kind: 'opencode', title: '共享 OpenCode Server 会话', updatedAt: ago(12), model: 'anthropic/claude-sonnet-4-5', state: 'idle', unread: 0, lastSeq: 8, preview: 'Desktop 与 Moyu 正在共用同一个 backend。' }
 ];
 
 const baseMessages = [
@@ -45,8 +46,9 @@ const activeSession = {
 };
 
 const adapters = [
-  { adapter: 'claude', displayName: 'Claude Code', available: true, capabilities: { profiles: true, models: true, modelSelection: 'freeform', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], permissionModes: ['plan', 'auto', 'acceptEdits'], sandbox: false, approvalsReviewer: false, sandboxModes: [], reviewers: [], approvalPolicies: ['on-request', 'never'], approvalChoices: ['allow', 'allow_session', 'deny'], streaming: { text: true, thinking: true, tools: true }, description: '支持原生 Plan / Auto / Accept Edits 与会话内授权' }, supportedModels: ['claude-sonnet', 'claude-opus'] },
-  { adapter: 'codex', displayName: 'Codex CLI', available: true, capabilities: { profiles: true, models: true, modelSelection: 'freeform', effortLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'], sandbox: true, approvalsReviewer: true, sandboxModes: ['workspace-write', 'read-only', 'danger-full-access'], reviewers: ['auto_review', 'user', 'guardian_subagent'], approvalPolicies: ['untrusted', 'on-failure', 'on-request', 'never'], approvalChoices: ['allow', 'deny', 'cancel'], streaming: { text: true, thinking: true, tools: true }, description: '支持 CODEX_HOME、sandbox 与 approvals reviewer' }, supportedModels: ['gpt-5.2-codex', 'gpt-5.1-codex-mini'] }
+  { adapter: 'claude', displayName: 'Claude Code', available: true, capabilities: { profiles: true, models: true, modelSelection: 'freeform', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], permissionModes: ['plan', 'auto', 'acceptEdits'], sandbox: false, approvalsReviewer: false, sandboxModes: [], reviewers: [], approvalPolicies: ['on-request', 'never'], approvalChoices: ['allow', 'allow_session', 'deny'], approval: { choices: ['allow', 'allow_session', 'deny'] }, history: { list: true, messages: true, resume: true }, runtime: { source: 'native-cli', shared: false }, attachments: { images: true, maxCount: 4 }, diff: true, interrupt: true, resume: true, streaming: { text: true, thinking: true, tools: true }, description: '支持原生 Plan / Auto / Accept Edits 与会话内授权' }, supportedModels: ['claude-sonnet', 'claude-opus'] },
+  { adapter: 'codex', displayName: 'Codex CLI', available: true, capabilities: { profiles: true, models: true, modelSelection: 'freeform', effortLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'], permissionModes: [], sandbox: true, approvalsReviewer: true, sandboxModes: ['workspace-write', 'read-only', 'danger-full-access'], reviewers: ['auto_review', 'user', 'guardian_subagent'], approvalPolicies: ['untrusted', 'on-failure', 'on-request', 'never'], approvalChoices: ['allow', 'deny', 'cancel'], approval: { choices: ['allow', 'deny', 'cancel'] }, history: { list: true, messages: true, resume: true }, runtime: { source: 'native-cli', shared: false }, attachments: { images: true, maxCount: 4 }, diff: true, interrupt: true, resume: true, streaming: { text: true, thinking: true, tools: true }, description: '支持 CODEX_HOME、sandbox 与 approvals reviewer' }, supportedModels: ['gpt-5.2-codex', 'gpt-5.1-codex-mini'] },
+  { adapter: 'opencode', displayName: 'OpenCode', available: true, capabilities: { profiles: false, models: true, modelSelection: 'freeform', effortLevels: [], permissionModes: [], sandbox: false, approvalsReviewer: false, sandboxModes: [], reviewers: [], approvalPolicies: [], approvalChoices: ['allow', 'allow_session', 'deny', 'cancel'], approval: { choices: ['allow', 'allow_session', 'deny', 'cancel'] }, history: { list: true, messages: true, resume: true }, runtime: { source: 'local-server', shared: true }, attachments: { images: false, maxCount: 0 }, diff: true, interrupt: true, resume: true, streaming: { text: true, thinking: true, tools: true }, description: '通过 PC 本地共享 OpenCode Server 连接' } }
 ];
 
 export function baseView() {
@@ -55,7 +57,7 @@ export function baseView() {
     pairDraft: { displayName: '', relayNode: '', pairString: '' },
     connection: { state: 'online', nodeId: 'node-studio', summary: '工作室 PC 已连接并同步', phoneBackendRttMs: 78, lastOnlineAt: ago(0) },
     nodes: [nodeA], sessions: baseSessions, activeSession,
-    server: { version: 'v0.0.3', protocolVersion: 1, adapters, maxMessageBytes: 1048576, features: { diff: true, resume: true, eventGapSync: true } },
+    server: { version: 'v0.0.4', protocolVersion: 1, adapters, maxMessageBytes: 1048576, features: { diff: true, resume: true, eventGapSync: true } },
     accounts: { nodeId: 'node-studio', adapters: [
       { ...adapters[0], profiles: [
         { profileId: 'native-claude', displayName: 'Native default', nativeDefault: true, hasCredentials: true, active: false },
@@ -69,7 +71,7 @@ export function baseView() {
       ] }
     ] },
     config: { defaultAdapter: 'claude', model: 'claude-sonnet', availableModels: ['claude-sonnet', 'claude-opus', 'gpt-5.2-codex'], modelSelection: 'freeform', approvalPolicies: ['on-request', 'never'], approvalPolicy: 'on-request', sandboxModes: [], reviewers: [] },
-    diagnostics: { net: { mode: 'TUN', selectedNode: 'SG · Relay', tunnel: 'active' }, transport: activeSession.transport, lastSyncAt: ago(1), backendVersion: 'v0.0.3', protocolVersion: 1, notes: ['耗时均为 Android glue 与后端提供的聚合观测。', 'Relay TCP 延迟不代表 Provider 网络延迟。'] },
+    diagnostics: { net: { mode: 'TUN', selectedNode: 'SG · Relay', tunnel: 'active' }, transport: activeSession.transport, lastSyncAt: ago(1), backendVersion: 'v0.0.4', protocolVersion: 1, notes: ['耗时均为 Android glue 与后端提供的聚合观测。', 'Relay TCP 延迟不代表 Provider 网络延迟。'] },
     ui: { pendingRequestIds: [] }
   };
 }
@@ -128,6 +130,15 @@ export const fixtures = [
       preview: 'rollout-2026-08-13T00-00-00-2222222222222222222222222222222222222222222222222222222222222222.jsonl'
     };
     v.route = 'sessions'; v.sessions = [nativeCodex, ...v.sessions]; v.activeSession = undefined; v.activeLocalSessionId = undefined;
+  }],
+  ['opencode-session', '34 · OpenCode 共享 Server', (v) => {
+    v.activeSession = sessionWith(baseMessages, { ...baseSessions[4], cwd: 'D:/projects/opencode-workspace', effortLevels: [], permissionModes: [], canSend: true, canInterrupt: false, diff: undefined });
+    v.activeLocalSessionId = 'session-opencode';
+  }],
+  ['unknown-adapter', '35 · 未知平台通用回退', (v) => {
+    const future = { adapter: 'future-cli', displayName: 'Future Runtime', available: false, unavailableReason: '需要更新 Moyu adapter', capabilities: { profiles: false, models: false, modelSelection: 'none', effortLevels: [], permissionModes: [], sandbox: false, approvalsReviewer: false, sandboxModes: [], reviewers: [], approvalPolicies: [], approvalChoices: [], approval: { choices: [] }, history: { list: true, messages: true, resume: false }, runtime: { source: 'native-cli', shared: false }, attachments: { images: false, maxCount: 0 }, diff: false, interrupt: false, resume: false, streaming: { text: true, thinking: false, tools: false } } };
+    const session = { localSessionId: 'session-future', resumeRef: 'opaque-future-ref', historyMessageCount: 3, historyCachedMessages: 3, historyCacheComplete: true, nodeId: 'node-studio', kind: 'future-cli', title: '前向兼容会话', updatedAt: ago(6), state: 'localOnly', unread: 0, lastSeq: 3, preview: '未知 adapter 不得回退为 Codex。' };
+    v.server.adapters.push(future); v.sessions = [session, ...v.sessions]; v.activeSession = sessionWith(baseMessages, { ...session, cwd: 'D:/projects/future', effortLevels: [], permissionModes: [], canSend: false, canInterrupt: false, diff: undefined }); v.activeLocalSessionId = session.localSessionId;
   }]
 ];
 

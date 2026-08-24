@@ -63,9 +63,12 @@ textarea { line-height: 1.45; }
 @keyframes dialog-sheet-in { from { opacity: .55; transform: translateY(18px); } }
 .provider-mark { display: inline-flex; align-items: center; gap: .45rem; min-height: 30px; padding: .3rem .55rem; border: var(--border-thin); background: var(--surface); box-shadow: 2px 2px 0 var(--ink); font-size: var(--text-xs); font-weight: var(--weight-black); text-transform: uppercase; letter-spacing: .06em; }
 .provider-glyph { display: grid; place-items: center; width: 25px; height: 25px; border: 2px solid var(--ink); background: var(--pink); color: var(--on-accent); font-family: var(--font-mono); font-weight: var(--weight-black); line-height: 1; }
-.provider-codex .provider-glyph { background: var(--cyan); }
+.provider-tone-cyan .provider-glyph { background: var(--cyan); }
+.provider-tone-lime .provider-glyph { background: var(--lime); }
+.provider-tone-purple .provider-glyph { background: var(--purple); }
 .provider-glyph img { display: block; width: 18px; height: 18px; object-fit: contain; }
-.provider-claude .provider-glyph img { width: 19px; }
+.provider-icon-wide .provider-glyph img { width: 19px; }
+.provider-generic-mark { font-size: 1rem; line-height: 1; }
 .reply-meta { display: flex; flex-wrap: wrap; gap: .3rem .65rem; margin-top: var(--space-3); padding-top: var(--space-2); border-top: 2px dashed var(--ink); color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .reply-meta > span { margin: 0 .65rem .3rem 0; }
 .reply-meta .performance-chip { padding: 1px 5px; border: 1px solid var(--ink); background: var(--lime); color: var(--on-accent); box-shadow: 2px 2px 0 var(--shadow); }

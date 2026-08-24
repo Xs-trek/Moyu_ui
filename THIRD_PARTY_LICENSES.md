@@ -2,7 +2,7 @@
 
 ## WebView UI 运行时
 
-构建后的 HTML/CSS/JavaScript 没有第三方前端运行时依赖，不加载远程字体、图片、图标、CSS 或 JavaScript。UI 使用系统字体、原创 Moyu 图形、通用 Unicode 状态符号，以及随包分发的 Anthropic/OpenAI 官方品牌 SVG 来标识 Claude Code 与 Codex CLI。品牌图形不是软件运行时依赖，不表示相关品牌对 Moyu 的认可或背书。
+构建后的 HTML/CSS/JavaScript 没有第三方前端运行时依赖，不加载远程字体、图片、图标、CSS 或 JavaScript。UI 使用系统字体、原创 Moyu 图形、通用 Unicode 状态符号，以及随包分发的 Anthropic/OpenAI 品牌 SVG 和 OpenCode 官方仓库 SVG，分别标识 Claude Code、Codex CLI 与 OpenCode。品牌图形不是软件运行时依赖，不表示相关品牌对 Moyu 的认可或背书。
 
 ## Android 运行时
 
@@ -23,4 +23,13 @@
 
 ## 本地资产
 
-`public/assets/brands/moyu.svg`、应用图标、通知图标、色块、状态标记和导航符号为本项目原创组合或通用字符。`public/assets/brands/anthropic.svg` 与 `public/assets/brands/openai.svg` 分别用于 Claude Code 与 Codex CLI 的兼容平台识别；相应名称和图形的权利归各自权利人所有。后续替换 `src/assets/icons/`、`src/assets/logo/` 或 `public/assets/brands/` 时，集成方必须同步更新本文件与 `THIRD_PARTY_NOTICES.md`。
+`public/assets/brands/moyu.svg`、应用图标、通知图标、色块、状态标记和导航符号为本项目原创组合或通用字符。`public/assets/brands/anthropic.svg` 与 `public/assets/brands/openai.svg` 分别用于 Claude Code 与 Codex CLI 的兼容平台识别；相应名称和图形的权利归各自权利人所有。
+
+`public/assets/brands/opencode.svg` 来自 `anomalyco/opencode` commit
+`ad192a59b5517fb432bc5f4d27f131d605a22beb` 的
+`packages/console/app/src/asset/brand/opencode-logo-light-square.svg`，随上游仓库以 MIT
+License 提供，Copyright (c) 2025 opencode；完整文本随 APK 保存为
+`assets/licenses/OpenCode-MIT.txt`。OpenCode 名称和图形仅用于兼容性识别，本项目并非
+OpenCode 团队构建且与其无隶属关系。
+
+后续替换 `src/assets/icons/`、`src/assets/logo/` 或 `public/assets/brands/` 时，集成方必须同步更新本文件与 `THIRD_PARTY_NOTICES.md`。

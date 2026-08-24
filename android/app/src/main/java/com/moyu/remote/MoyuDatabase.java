@@ -30,7 +30,8 @@ public final class MoyuDatabase extends SQLiteOpenHelper {
     }
 
     public static final class SessionRecord {
-        public String localSessionId, remoteSessionId, nativeSessionId, nodeId, kind, title, cwd, profileId, model, effort, permissionMode, state, updatedAt, draft, preview;
+        /** resumeRef is opaque adapter-owned identity; nativeSessionId is a one-window UI/storage alias. */
+        public String localSessionId, remoteSessionId, resumeRef, nativeSessionId, nodeId, kind, title, cwd, profileId, model, effort, permissionMode, state, updatedAt, draft, preview;
         public int lastSeq, unread, nativeMessageCount, nativeCachedSeq, previewSeq;
     }
 
@@ -114,7 +115,11 @@ public final class MoyuDatabase extends SQLiteOpenHelper {
     }
 
     public synchronized SessionRecord findNativeSession(String nodeId, String kind, String nativeId) {
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT " + SESSION_COLUMNS + " FROM sessions WHERE node_id=? AND kind=? AND native_id=?", new String[]{nodeId, kind, nativeId})) {
+        return findResumeSession(nodeId, kind, nativeId);
+    }
+
+    public synchronized SessionRecord findResumeSession(String nodeId, String kind, String resumeRef) {
+        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT " + SESSION_COLUMNS + " FROM sessions WHERE node_id=? AND kind=? AND native_id=?", new String[]{nodeId, kind, resumeRef})) {
             return cursor.moveToFirst() ? readSession(cursor) : null;
         }
     }
@@ -227,6 +232,25 @@ public final class MoyuDatabase extends SQLiteOpenHelper {
         values.put("remote_seq", remoteSeq); values.put("body", body.toString()); values.put("created_at", body.optString("createdAt", Instant.now().toString()));
         db.insertWithOnConflict("timeline", null, values, SQLiteDatabase.CONFLICT_REPLACE);
         updatePreview(db, sessionId, localSeq, body);
+    }
+
+    /**
+     * Idempotently stores a message identified by an adapter/server-owned source id. The source id
+     * is scoped to its session, so replayed WS events and REST reconciliation update one row while
+     * preserving the row's local ordering.
+     */
+    public synchronized void putSourceTimeline(String sessionId, String sourceScope, String sourceId, Integer remoteSeq, JSONObject body) {
+        String safeScope = AdapterCapabilityPolicy.validOpaqueId(sourceScope);
+        String safeSourceId = AdapterCapabilityPolicy.validOpaqueId(sourceId);
+        if (safeScope == null || safeSourceId == null) throw new IllegalArgumentException("Invalid source identity");
+        try { body.put("sourceId", safeSourceId); } catch (Exception ignored) { }
+        String itemKey = "source:" + UUID.nameUUIDFromBytes(
+                (safeScope + "\u0000" + safeSourceId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if ("message".equals(body.optString("kind")) && "user".equals(body.optString("role"))) {
+            putCanonicalUserTimeline(sessionId, itemKey, remoteSeq, body);
+        } else {
+            putTimeline(sessionId, itemKey, remoteSeq, body);
+        }
     }
 
     /**
@@ -396,7 +420,7 @@ public final class MoyuDatabase extends SQLiteOpenHelper {
     }
 
     private SessionRecord readSession(Cursor c) {
-        SessionRecord s = new SessionRecord(); s.localSessionId=c.getString(0); s.remoteSessionId=c.isNull(1)?null:c.getString(1); s.nativeSessionId=c.isNull(2)?null:c.getString(2); s.nodeId=c.getString(3); s.kind=c.getString(4);
+        SessionRecord s = new SessionRecord(); s.localSessionId=c.getString(0); s.remoteSessionId=c.isNull(1)?null:c.getString(1); s.resumeRef=c.isNull(2)?null:c.getString(2); s.nativeSessionId=s.resumeRef; s.nodeId=c.getString(3); s.kind=c.getString(4);
         s.title=c.getString(5); s.cwd=c.isNull(6)?null:c.getString(6); s.profileId=c.isNull(7)?null:c.getString(7); s.model=c.isNull(8)?null:c.getString(8); s.effort=c.isNull(9)?null:c.getString(9); s.permissionMode=c.isNull(10)?null:c.getString(10);
         s.state=c.getString(11); s.updatedAt=c.getString(12); s.lastSeq=c.getInt(13); s.unread=c.getInt(14); s.draft=c.getString(15); s.nativeMessageCount=c.getInt(16); s.nativeCachedSeq=c.getInt(17);
         s.preview=c.isNull(18)?null:c.getString(18); s.previewSeq=c.getInt(19); return s;
@@ -407,6 +431,8 @@ public final class MoyuDatabase extends SQLiteOpenHelper {
     }
 
     private static void normalizeSession(SessionRecord session) {
+        if (session.resumeRef == null) session.resumeRef = session.nativeSessionId;
+        session.nativeSessionId = session.resumeRef;
         if (session.localSessionId == null) session.localSessionId = UUID.randomUUID().toString();
         if (session.updatedAt == null) session.updatedAt = Instant.now().toString();
         if (session.state == null) session.state = session.remoteSessionId == null ? "localOnly" : "idle";
@@ -415,7 +441,7 @@ public final class MoyuDatabase extends SQLiteOpenHelper {
 
     private static ContentValues sessionValues(SessionRecord session) {
         ContentValues values = new ContentValues();
-        values.put("local_id", session.localSessionId); values.put("remote_id", session.remoteSessionId); values.put("native_id", session.nativeSessionId); values.put("node_id", session.nodeId);
+        values.put("local_id", session.localSessionId); values.put("remote_id", session.remoteSessionId); values.put("native_id", session.resumeRef); values.put("node_id", session.nodeId);
         values.put("kind", session.kind); values.put("title", session.title); values.put("cwd", session.cwd); values.put("profile_id", session.profileId);
         values.put("model", session.model); values.put("effort", session.effort); values.put("permission_mode", session.permissionMode); values.put("state", session.state); values.put("updated_at", session.updatedAt); values.put("last_seq", session.lastSeq);
         values.put("unread", session.unread); values.put("draft", session.draft);
